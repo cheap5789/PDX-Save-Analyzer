@@ -50,3 +50,10 @@ logs/
 .env
 .env.*
 !.env.example
+
+# === Proprietary game data (never publish) ===
+# EU5 base game config and localisation files
+# Drop these into game-data/ locally for toolbox use — never committed
+# The README.md inside game-data/ IS committed (it's just instructions)
+game-data/**
+!game-data/README.md
