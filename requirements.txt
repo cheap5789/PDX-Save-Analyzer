@@ -1,0 +1,15 @@
+# PDX Save Analyzer — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Web framework & server
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# File watching
+watchdog>=4.0.0
+
+# Data
+aiosqlite>=0.20.0
+
+# Utilities
+python-dotenv>=1.0.0

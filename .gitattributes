@@ -1,2 +1,28 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Explicitly declare text files to ensure consistent line endings
+*.py    text eol=lf
+*.js    text eol=lf
+*.jsx   text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.sql   text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+
+# Binary files — never mangle
+*.eu5   binary
+*.eu4   binary
+*.ck3   binary
+*.hoi4  binary
+*.v3    binary
+*.db    binary
+bin/rakaly/rakaly     binary
+bin/rakaly/rakaly.exe binary
