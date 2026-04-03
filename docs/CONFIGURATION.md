@@ -1,7 +1,7 @@
 # Configuration — Startup UI & Watcher Settings
 
 > Design document for the session configuration layer.
-> Agreed: 2026-04-03. Update if decisions change.
+> Agreed: 2026-04-03. Updated: 2026-04-04.
 
 ---
 
@@ -9,22 +9,49 @@
 
 Before the watcher starts, the user goes through a **startup configuration UI**. This is not a one-time setup — it is presented (or resumable) at the beginning of each analysis session, because the relevant parameters may differ between play sessions (different campaign, different game, different frequency needs).
 
-The configuration drives three downstream systems:
-1. **Which save directory** the file watcher monitors
-2. **Which SQLite database file** receives snapshots
-3. **How often** the watcher actually records a snapshot (vs. silently ignoring a save)
+The configuration drives four downstream systems:
+1. **Which game install directory** supplies localisation and config files
+2. **Which save directory** the file watcher monitors
+3. **Which SQLite database file** receives snapshots
+4. **How often** the watcher actually records a snapshot (vs. silently ignoring a save)
 
 ---
 
 ## Startup Configuration Fields
 
-| Field | Type | Notes |
-|-------|------|-------|
-| **Game** | Dropdown | EU5 / CK3 / HOI4 / Victoria 3 / Imperator (only EU5 for now) |
-| **Save directory** | Path picker | Default path per game (auto-suggested), overridable |
-| **Country played** | Text / dropdown | For labelling; auto-detected from first save if left blank |
-| **Multiplayer** | Toggle | Auto-detected from save metadata, but user can override |
-| **Snapshot frequency** | Dropdown | See options below |
+| Field | Type | Required? | Notes |
+|-------|------|-----------|-------|
+| **Game** | Dropdown | Yes | EU5 (only game for now; future: CK3 / HOI4 / Victoria 3 / Imperator) |
+| **Game install path** | Path picker | Yes | Root install directory. Auto-suggested from default Steam path, overridable. See [Install Path Detection](#install-path-detection). |
+| **Save directory** | Path picker | Yes | Where the game writes saves. Auto-suggested per game, overridable. |
+| **Language** | Dropdown | Auto | Auto-populated from available subfolders in `<install>/game/main_menu/localization/`. Default: `english`. |
+| **Snapshot frequency** | Dropdown | Yes | See options below. Default: "Every in-game year". |
+| **Country played** | Text / read-only | Auto | Auto-detected from first save. Displayed for confirmation. |
+| **Multiplayer** | Toggle / read-only | Auto | Auto-detected from `metadata.multiplayer`. Displayed for confirmation. |
+
+### Install Path Detection
+
+The app auto-suggests the default Steam install path per game. The user can override if their install is elsewhere.
+
+| Game | Default Windows path |
+|------|---------------------|
+| EU5  | `C:\Program Files (x86)\Steam\steamapps\common\Europa Universalis V` |
+
+Once the install path is confirmed, the app derives two sub-paths automatically:
+
+| Resource | Path (relative to install) | Purpose |
+|----------|---------------------------|---------|
+| **Localisation** | `game\main_menu\localization\<language>\` | Display name `.yml` files for all game objects |
+| **Config files** | `game\` (common/, events/, setup/) | Definitions for cultures, religions, ages, events, etc. |
+
+### Available Languages
+
+The language dropdown is populated dynamically by scanning the subfolders of:
+```
+<install>\game\main_menu\localization\
+```
+
+Each subfolder name corresponds to a language. The save analyzer uses this to resolve all display names in the user's own language.
 
 ### Snapshot Frequency Options
 
@@ -39,6 +66,29 @@ The watcher detects *every* file system change, but only records a snapshot to t
 | Every 25 years | Record every 25 in-game years | Minimal footprint, AAR milestone use |
 
 > **Implementation note:** The in-game date is available from `metadata.date` in rakaly JSON output (e.g. `"1482.1.1"`). The watcher compares the year component of the new save against the year component of the last recorded snapshot. If the difference meets or exceeds the configured threshold, the snapshot is recorded. Otherwise the save is parsed for metadata only (to detect events) and discarded.
+
+---
+
+## Localisation Strategy (agreed 2026-04-04)
+
+### Decision: read directly from game install at runtime
+
+The app reads localisation `.yml` files directly from the game installation directory — it does **not** store or ship any proprietary game files.
+
+### Why
+- Always in sync with game patches (no manual re-copy when game updates)
+- Automatically supports the user's chosen language
+- No proprietary files in the project at all
+- Zero manual file copying by the user
+
+### How it works
+1. At startup, the user confirms the EU5 install path (auto-suggested)
+2. The app reads all `.yml` files from `<install>/game/main_menu/localization/<language>/`
+3. A processed `data/eu5_loc_cache.json` (key→value dict only, no raw game files) is written for fast subsequent starts
+4. The cache is invalidated when `metadata.version` from a save doesn't match the cached version (i.e. a game update happened)
+
+### Fallback for development
+The `game-data/eu5/localization/english/` directory (git-ignored) contains a manual copy used only by the Toolbox scripts during development. The app in production never uses it.
 
 ---
 
@@ -130,9 +180,7 @@ Several config fields can be auto-populated from the first save detected after t
 | Playthrough ID | `metadata.playthrough_id` |
 | Game version | `metadata.version` |
 
-This means the startup UI only *needs* the user to confirm: **game** and **save directory**. Everything else can be proposed from the first save and confirmed by the user.
-
----
+This means the startup UI only *needs* the user to provide: **game install path**, **save directory**, and **snapshot frequency**. Everything else is proposed from the first save and confirmed by the user.
 
 ---
 
@@ -158,7 +206,7 @@ The watcher reads `metadata.playthrough_id` from every parsed save. If the ID di
 No user action needed. The UUID in the save file is the source of truth.
 
 **Snapshot frequency changeable mid-campaign: yes.**
-Since frequency is just a threshold applied at parse time (comparing current game date against last snapshot's game date in the DB), changing it has zero performance impact. It takes effect immediately on the next detected save. The setting is stored in `user_config.json` per playthrough.
+Since frequency is just a threshold applied at parse time (comparing current game date against last snapshot's game date in the DB), changing it has zero performance impact. It takes effect immediately on the next detected save. The setting is stored per playthrough in the DB.
 
 **Auto-resume on app restart: yes, with confirmation.**
 On startup, if a previously active playthrough is found in the DB for the configured game + save directory, the watcher proposes to resume it. The user confirms or starts fresh. This avoids forcing users to re-configure for every MP session.
@@ -167,7 +215,9 @@ On startup, if a previously active playthrough is found in the DB for the config
 
 ```
 App starts
-  └─> Config UI (game + save dir, frequency)
+  └─> Config UI (game install path + save dir + frequency)
+        ├─> Validate install path (localisation accessible?)
+        ├─> Load localisation from <install>/game/main_menu/localization/<language>/
         └─> Watcher armed, waiting for file change
               └─> Save detected
                     ├─> Parse metadata (playthrough_id, date)

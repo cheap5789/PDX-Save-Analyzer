@@ -1,6 +1,6 @@
 # Toolbox — Save Game Data Explorer
 
-The Toolbox is a set of standalone scripts used to empirically understand Paradox save file formats **before** writing any parser. It is Phase 1 of the build order.
+The Toolbox is a set of standalone scripts used to empirically understand Paradox save file formats **before** writing any parser. It was built in Phase 1.
 
 ---
 
@@ -8,46 +8,73 @@ The Toolbox is a set of standalone scripts used to empirically understand Parado
 
 - Explore the raw structure of a save file
 - Identify what keys exist, their types, and sample values
-- Discover relationships between objects
-- Cross-reference save keys with base game config files
+- Discover relationships between objects (culture/religion ID → name, country ID → TAG)
+- Resolve display names via localisation files
 - Populate `docs/games/<game>/` with verified, cited findings
 
 ---
 
-## Scripts (planned)
+## Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `toolbox/explore.py` | Interactive key browser — navigate the JSON tree from a rakaly-decoded save |
-| `toolbox/schema_dump.py` | Dump the full key tree (keys only, no values) to a JSON file for offline review |
-| `toolbox/find_key.py` | Search for a specific key across the entire save, print path + sample value |
-| `toolbox/link_config.py` | Cross-reference save keys with a base game config file directory |
-| `toolbox/inspect_raw.py` | Low-level binary inspector for the pre-ZIP and gamestate sections |
+| Script | Purpose | Status |
+|--------|---------|--------|
+| `toolbox/save_loader.py` | Core loader — calls rakaly CLI, builds lookup tables, returns `EU5Save` dataclass | ✅ Complete |
+| `toolbox/localisation.py` | Parses EU5 `.yml` localisation files into a flat key→display name dict | ✅ Complete |
+| `toolbox/explore.py` | Interactive CLI browser — navigate JSON tree, resolve culture/religion IDs inline | ✅ Complete |
+| `toolbox/schema_dump.py` | Dump key tree with types and sample values to JSON (supports `--section` and `--depth`) | ✅ Complete |
+| `toolbox/find_key.py` | Recursive key search across entire save — substring or exact match | ✅ Complete |
 
 ---
 
-## Usage (once built)
+## Core: `save_loader.py`
+
+All other scripts depend on `save_loader.load_save()`. It returns an `EU5Save` dataclass with:
+
+- `raw` — full rakaly JSON output
+- `culture_index` — int id → culture key (from `culture_manager.database`)
+- `religion_index` — int id → religion key (from `religion_manager.database`)
+- `tag_index` — numeric string → 3-letter TAG (from `countries.tags`)
+- `loc` — localisation key → display name (if `--loc` provided)
+
+Key methods: `resolve_culture(id)`, `resolve_religion(id)`, `resolve_culture_name(id)`, `resolve_religion_name(id)`, `country_tag(id)`, `country_display_name(tag)`, `player_country_data()`, `all_real_countries()`.
+
+---
+
+## Usage
+
+All scripts use `-m` module syntax from the project root:
 
 ```bash
-# Explore interactively
-python toolbox/explore.py path/to/save.eu5
+# Interactive browser with localisation
+python -m toolbox.explore saves/autosave.eu5 --loc game-data/eu5/localization/english
 
-# Dump full schema
-python toolbox/schema_dump.py path/to/save.eu5 --out docs/games/eu5/schema_dump.json
+# Dump schema to file (depth 4)
+python -m toolbox.schema_dump saves/autosave.eu5 --out docs/games/eu5/schema.json --depth 4
 
-# Find a key
-python toolbox/find_key.py path/to/save.eu5 --key treasury
+# Dump a specific section
+python -m toolbox.schema_dump saves/autosave.eu5 --section countries.database.2186 --depth 6 --pretty
 
-# Cross-reference with config
-python toolbox/link_config.py path/to/save.eu5 --config-dir "C:/Steam/steamapps/common/EU5/game/common/"
+# Search for a key (substring match, max 50 results)
+python -m toolbox.find_key saves/autosave.eu5 treasury
+
+# Exact match search
+python -m toolbox.find_key saves/autosave.eu5 war_exhaustion --exact --max 20
 ```
+
+### Rakaly binary location
+
+All scripts default to `--rakaly bin/rakaly/rakaly`. The project ships with rakaly v0.8.14 binaries in `bin/rakaly/` (git-ignored).
+
+### Localisation directory
+
+For development, localisation files are copied to `game-data/eu5/localization/english/` (git-ignored). The production app reads directly from the game install — see `docs/CONFIGURATION.md`.
 
 ---
 
-## Status
+## Output
 
-- [ ] `inspect_raw.py` — format already analyzed manually (see `docs/games/eu5/save-schema.md`)
-- [ ] `explore.py` — blocked on rakaly CLI EU5 support verification
-- [ ] `schema_dump.py` — blocked on rakaly CLI EU5 support verification
-- [ ] `find_key.py` — blocked on rakaly CLI EU5 support verification
-- [ ] `link_config.py` — blocked on EU5 install path + config file locations
+Phase 1 toolbox findings are documented in:
+
+- `docs/games/eu5/save-schema.md` — complete save format documentation
+- `docs/games/eu5/OVERVIEW.md` — verified game concepts and config file locations
+- `docs/games/eu5/schema_top_level.json` — generated schema dump

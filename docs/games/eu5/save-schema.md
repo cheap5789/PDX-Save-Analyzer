@@ -83,14 +83,11 @@ The `gamestate` (and pre-ZIP header) use the Jomini binary token encoding:
 ```
 .eu5 file
   │
-  ├─ Extract ZIP (Python zipfile, offset = first PK\x03\x04 signature)
-  │    ├─ gamestate  → Jomini binary → needs rakaly CLI or token table
-  │    └─ string_lookup → parse length-prefixed string list
-  │
-  └─ [Option A] rakaly CLI json <file> → JSON stdout (preferred, needs EU5 support verification)
-     [Option B] librakaly via ctypes (fallback)
-     [Option C] custom token decoder (only if rakaly doesn't support EU5)
+  └─ rakaly CLI json <file> → JSON stdout  ✅ Confirmed working (v0.8.14)
 ```
+
+Rakaly handles the full pipeline internally: ZIP extraction, binary token decoding, string_lookup resolution.
+No manual ZIP extraction or custom token decoding needed.
 
 ---
 
@@ -306,13 +303,15 @@ Named situations, each with status + dates:
 
 ---
 
-## Open Questions / Next Steps
+## Resolved Questions
 
-- [ ] Resolve `primary_culture` numeric ID → name (needs `common/cultures/` config)
-- [ ] Resolve `primary_religion` numeric ID → name (needs `common/religions/` config)
+- [x] **Culture/religion numeric IDs:** The save is **self-referential**. `culture_manager.database[id]` and `religion_manager.database[id]` contain the int→string key mapping directly. No external config files needed for parsing — only for display names. Confirmed 2026-04-03.
+- [x] **Country display names:** Resolved via localisation `.yml` files at `<EU5 install>/game/main_menu/localization/<language>/`. The key is the 3-letter TAG (e.g. `WUR`), the localisation provides the display name (e.g. "Württemberg"). Confirmed 2026-04-04.
+- [x] **Age definitions:** Found at `common/age/` (not `common/ages/`). Age keys like `age_3_discovery` are defined there. Confirmed 2026-04-04.
+- [x] **EU5 base game install directory:** Default Steam path is `C:\Program Files (x86)\Steam\steamapps\common\Europa Universalis V`. Config files under `game/`, localisation under `game/main_menu/localization/`. Confirmed 2026-04-04.
+
+## Open Questions
+
 - [ ] Resolve `capital` location ID → province name (needs `map/` or `common/` config)
-- [ ] Confirm meaning of `stability` scale (23.09 — is this 0–100? needs config)
-- [ ] Confirm `karma` / `purity` / `righteousness` — which religion mechanics use which?
-- [ ] Find display name mapping for country tags (WUR → "Württemberg"?) via localisation
-- [ ] Understand `age_3_discovery` — what ages exist and what are their thresholds?
-- [ ] Locate EU5 base game install directory to find config files
+- [ ] Confirm meaning of `stability` scale (23.09 — is this 0–100? needs `common/defines/`)
+- [ ] Confirm `karma` / `purity` / `righteousness` — which religion mechanics use which? (needs `common/religions/` or `common/defines/`)
