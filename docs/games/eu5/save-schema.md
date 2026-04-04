@@ -28,9 +28,9 @@ The `.eu5` file is a **composite format** with two distinct sections:
 │  Mixed with some Clausewitz     │
 │  plaintext (coat of arms, etc.) │
 ├─────────────────────────────────┤
-│  SECTION 2: ZIP Archive         │  ~34 MB compressed
-│  ├── gamestate                  │  136.4 MB uncompressed (76% compression)
-│  └── string_lookup              │  3.4 MB uncompressed  (50% compression)
+│  SECTION 2: ZIP Archive         │  ~34.5 MB compressed
+│  ├── gamestate                  │  136.4 MB uncompressed (~32.7 MB compressed, 76% ratio)
+│  └── string_lookup              │    3.4 MB uncompressed  (~1.76 MB compressed, 50% ratio)
 └─────────────────────────────────┘
 ```
 
@@ -48,7 +48,7 @@ The ZIP occupies the rest of the file. It contains exactly two entries:
 
 #### `gamestate`
 - **Uncompressed size:** 142,980,201 bytes (136.4 MB)
-- **Compressed size:** ~34 MB (76% compression ratio)
+- **Compressed size:** ~32.7 MB (76% compression ratio)
 - **Format:** Jomini binary token format
 - **Content:** Main game state — all country data, provinces, characters, wars, etc.
 - Starts with the same binary token pattern as the pre-ZIP header
@@ -88,6 +88,7 @@ The `gamestate` (and pre-ZIP header) use the Jomini binary token encoding:
 
 Rakaly handles the full pipeline internally: ZIP extraction, binary token decoding, string_lookup resolution.
 No manual ZIP extraction or custom token decoding needed.
+Parsing time for a 34.5 MB save file (136.4 MB uncompressed gamestate): fast (< 2s).
 
 ---
 
@@ -100,18 +101,6 @@ No manual ZIP extraction or custom token decoding needed.
 | Save UUID | c832299a-d810-47d8-a21a-3e5e710c98d9 | Pre-ZIP header |
 | Player country | Upper Bavaria | Pre-ZIP header, readable string |
 | Country tag color | #dc5a8326 | Pre-ZIP header (CoA data) |
-
----
-
----
-
-## Rakaly CLI — Verified Working ✅
-
-**rakaly v0.8.14** successfully decodes `.eu5` saves and outputs clean JSON via:
-```
-rakaly json <file.eu5>
-```
-Output goes to stdout. Parsing time for a 34.5 MB save (136 MB uncompressed): fast (< 2s).
 
 ---
 
@@ -160,13 +149,13 @@ Output goes to stdout. Parsing time for a 34.5 MB save (136 MB uncompressed): fa
 
 ## `played_country` Object
 
-| Key | Sample value | Notes |
-|-----|-------------|-------|
-| `name` | `"Capitaine Erin"` | Player's character/ruler name |
-| `id` | `4` | Player slot ID |
-| `country` | `2186` | Numeric ID into `countries.database` |
-| `player_proficiency` | `"EXPERT"` | |
-| `same_name` | `true` | |
+| Key | Type | Sample value | Notes |
+|-----|------|-------------|-------|
+| `name` | string | `"Capitaine Erin"` | Player's character/ruler name |
+| `id` | int | `4` | Player slot ID |
+| `country` | int | `2186` | Numeric ID into `countries.database` |
+| `player_proficiency` | string | `"EXPERT"` | |
+| `same_name` | bool | `true` | |
 
 ---
 
@@ -188,15 +177,15 @@ Two sub-keys:
 |-----|-------------|--------------------------------------|
 | `gold` | 251.70 | Treasury |
 | `manpower` | 3.60 | Manpower pool |
-| `stability` | 23.09 | Stability (scale unknown — needs config) |
+| `stability` | 23.09 | Stability (scale: −100 to +100) |
 | `inflation` | 0.00023 | Inflation |
 | `prestige` | 75.70 | Prestige |
 | `army_tradition` | 41.24 | Army tradition |
 | `government_power` | 80.36 | Government power |
-| `karma` | -58.67 | Karma (religion-related?) |
+| `karma` | -58.67 | Religion-specific currency. Used by: `bon`, `mahayana`, `theravada`, `sammitiya`, `tibetan_buddhism`. Present in save for all countries; only shown in UI when relevant to current religion. |
 | `religious_influence` | 49.18 | Religious influence |
-| `purity` | 60 | Purity |
-| `righteousness` | 90 | Righteousness |
+| `purity` | 60 | Religion-specific currency. Used by: `shinto`. Present in save for all countries; only shown in UI when relevant to current religion. |
+| `righteousness` | 90 | Religion-specific currency. Used by: `sanjiao`. Present in save for all countries; only shown in UI when relevant to current religion. |
 
 **`balance_history_2`** sub-object (monthly deltas — note PascalCase keys):
 
@@ -373,10 +362,10 @@ Changes to apply after full audit is complete:
 | 23 | Army Tradition | `currency_data.army_tradition` | `8.72` | 8.72% | Displayed as percentage in game but raw value IS the percentage (not a 0–1 fraction). | None (just add "%" in display) | `army_tradition` | **OK** | Value is already the percentage. No multiplication needed, just suffix "%" in frontend. |
 | 24 | Navy Tradition | `currency_data.navy_tradition` | `0.10` | 0.10% | Same as army tradition — raw value is the percentage. | None (add "%" in display) | — | **NOT TRACKED** | Not in field catalog. Should add. |
 | 25 | Government Power | `currency_data.government_power` | `53.27` | 53.27 | Direct value. Scale 0–100. | None | `government_power` | **OK** | |
-| 26 | Karma | `currency_data.karma` | `-40.80` | — (not shown for Catholics) | Religion-specific currency. Present in save even if not used by current religion. | None | `karma` | **OK** | Not displayed for Catholic countries. Keeping it tracked — value may become relevant on religion conversion. |
+| 26 | Karma | `currency_data.karma` | `-40.80` | — (not shown for Catholics) | Religion-specific currency. Present in save even if not used by current religion. | None | `karma` | **OK** | Used by: `bon`, `mahayana`, `theravada`, `sammitiya`, `tibetan_buddhism`. Not shown for other religions. Tracked for all — relevant on conversion. |
 | 27 | Religious Influence | `currency_data.religious_influence` | `39.14` | 39.14 | Direct value. | None | `religious_influence` | **OK** | |
-| 28 | Purity | `currency_data.purity` | `60` | — (not shown for Catholics) | Religion-specific. Present in save even if not used by current religion. | None | `purity` | **OK** | Same as karma — tracked but may not be visible in UI for all religions. |
-| 29 | Righteousness | `currency_data.righteousness` | `90` | — (not shown for Catholics) | Religion-specific. Same as above. | None | `righteousness` | **OK** | |
+| 28 | Purity | `currency_data.purity` | `60` | — (not shown for Catholics) | Religion-specific. Present in save even if not used by current religion. | None | `purity` | **OK** | Used by: `shinto`. Not shown for other religions. Tracked for all — relevant on conversion. |
+| 29 | Righteousness | `currency_data.righteousness` | `90` | — (not shown for Catholics) | Religion-specific. Same as above. | None | `righteousness` | **OK** | Used by: `sanjiao`. Not shown for other religions. Tracked for all — relevant on conversion. |
 | 30 | Complacency | `currency_data.complacency` | `7.70` | 7.7 | Scale: 0 to 100. Over 90 triggers a monthly chance of complacency disaster lasting decades. Reduced by diplomatic spending, being target of a coalition, and having threatening rivals. | None | — (only monthly tracked) | **NEEDS FIX** | Currently we only track `balance_history_2.Complacency` (the monthly delta) but NOT the stock value. Must add `currency_data.complacency` to the field catalog — the absolute level is crucial gameplay info (staying under 90). |
 | 31 | War Exhaustion | `currency_data.war_exhaustion` | (present on countries at war) | — | Direct value. | None | — (only monthly tracked) | **CHECK** | FRA has no `war_exhaustion` in currency_data in this save (not at war?). Currently tracked only as monthly delta via `balance_history_2.WarExhaustion`. Need to check: should we also track the stock? |
 
