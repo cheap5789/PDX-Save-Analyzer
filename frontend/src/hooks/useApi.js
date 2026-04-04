@@ -60,5 +60,12 @@ export function useApi() {
       const q = params.toString() ? `?${params}` : ''
       return request('GET', `/api/events/${playthroughId}${q}`)
     },
+
+    /** PATCH /api/events/:id/note — set or update AAR note */
+    updateAarNote: (eventId, note) =>
+      request('PATCH', `/api/events/${eventId}/note`, { note }),
+
+    /** GET /api/config — load persisted config */
+    getConfig: () => request('GET', '/api/config'),
   }
 }

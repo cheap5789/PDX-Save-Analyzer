@@ -55,7 +55,7 @@ export default function App() {
           <ChartsTab snapshots={snapshots} status={status} />
         )}
         {activeTab === 'events' && (
-          <EventsTab events={events} />
+          <EventsTab events={events} status={status} />
         )}
         {activeTab === 'config' && (
           <ConfigTab status={status} onStatusChange={handleStatusChange} />

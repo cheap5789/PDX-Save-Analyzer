@@ -25,6 +25,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Qu
 from backend.api.schemas import (
     StartRequest, StatusResponse, PlaythroughResponse,
     SnapshotResponse, EventResponse, FieldDefResponse, WsMessage,
+    UpdateAarNoteRequest, SavedConfig,
 )
 from backend.config import SessionConfig
 from backend.parser.eu5.field_catalog import FIELD_CATALOG
@@ -116,6 +117,9 @@ async def start_pipeline(req: StartRequest) -> StatusResponse:
         language=req.language,
         enabled_field_keys=req.enabled_field_keys,
     )
+
+    # Persist config for next session auto-fill
+    _save_config(req)
 
     # Validate paths
     if not config.save_directory.exists():
@@ -283,6 +287,71 @@ async def get_fields(
         )
         for f in fields
     ]
+
+
+# ---------------------------------------------------------------------------
+# Config persistence
+# ---------------------------------------------------------------------------
+
+_CONFIG_PATH = Path("data/user_config.json")
+
+
+def _save_config(req: StartRequest) -> None:
+    """Persist the config to disk so it can be restored on next launch."""
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config_data = SavedConfig(
+        game=req.game,
+        game_install_path=req.game_install_path,
+        save_directory=req.save_directory,
+        snapshot_freq=req.snapshot_freq,
+        language=req.language,
+        enabled_field_keys=req.enabled_field_keys,
+    )
+    _CONFIG_PATH.write_text(config_data.model_dump_json(indent=2))
+
+
+def _load_config() -> SavedConfig | None:
+    """Load the most recently saved config, or None if not found."""
+    if not _CONFIG_PATH.exists():
+        return None
+    try:
+        return SavedConfig.model_validate_json(_CONFIG_PATH.read_text())
+    except Exception:
+        return None
+
+
+@router.get("/api/config", response_model=SavedConfig)
+async def get_config() -> SavedConfig:
+    """Return the persisted config, or defaults if none saved."""
+    saved = _load_config()
+    if saved:
+        return saved
+    return SavedConfig()
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/events/{event_id}/note
+# ---------------------------------------------------------------------------
+
+@router.patch("/api/events/{event_id}/note", response_model=EventResponse)
+async def update_event_note(event_id: int, req: UpdateAarNoteRequest) -> EventResponse:
+    """Set or update the AAR note on an event."""
+    if not _db:
+        raise HTTPException(400, "No database open. Start the pipeline first.")
+
+    await _db.update_aar_note(event_id, req.note)
+
+    # Fetch the updated event to return it
+    cursor = await _db.conn.execute(
+        "SELECT * FROM events WHERE id = ?", (event_id,)
+    )
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(404, f"Event {event_id} not found.")
+
+    d = dict(row)
+    d["payload"] = json.loads(d["payload"]) if isinstance(d.get("payload"), str) else d.get("payload")
+    return EventResponse(**d)
 
 
 # ---------------------------------------------------------------------------

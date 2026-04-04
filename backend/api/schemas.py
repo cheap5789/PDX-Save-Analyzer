@@ -23,6 +23,21 @@ class StartRequest(BaseModel):
     enabled_field_keys: list[str] = []  # empty = use defaults
 
 
+class UpdateAarNoteRequest(BaseModel):
+    """PATCH /api/events/{id}/note — set or update an AAR note."""
+    note: str = ""
+
+
+class SavedConfig(BaseModel):
+    """Persisted user config (data/user_config.json)."""
+    game: str = "eu5"
+    game_install_path: str = ""
+    save_directory: str = ""
+    snapshot_freq: str = "yearly"
+    language: str = "english"
+    enabled_field_keys: list[str] = []
+
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------

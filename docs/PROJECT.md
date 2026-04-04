@@ -126,6 +126,14 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 **Decision:** Events displayed as a scrollable card feed, newest first. Each card shows an icon, event type, game date, and payload summary. Filter buttons for each event type with counts.
 **Rationale:** Simple and functional. Timeline view deferred — can be added later without restructuring.
 
+### [2026-04-04] AAR notes: inline per event (Phase 6)
+**Decision:** Each event card has an "Add note" / "Edit note" button that expands an inline text editor. Notes are saved via `PATCH /api/events/{id}/note` to the existing `aar_note` column. Historical events (with notes) are loaded from REST on tab open and merged with live WebSocket events.
+**Rationale:** User chose the simplest option. A separate AAR journal or export can be layered on later without restructuring the event model.
+
+### [2026-04-04] Config persistence: last session only, data/user_config.json (Phase 6)
+**Decision:** On `POST /api/start`, the config (game, paths, frequency, language, enabled fields) is saved to `data/user_config.json`. On page load, `GET /api/config` returns the saved config to pre-fill the Config tab. One file, overwritten each time, one config per game.
+**Rationale:** Minimal friction. User doesn't need to re-enter paths every session. The file is already in `.gitignore`. Per-playthrough config overrides deferred.
+
 ### [2026-04-04] Localisation read directly from game install, not shipped with the app
 **Decision:** The app reads localisation `.yml` files at runtime from `<EU5 install>/game/main_menu/localization/<language>/`. No proprietary game files are stored in or shipped with the project.
 **Rationale:** Always in sync with game patches, supports user's language automatically, no proprietary files in the project. A processed cache (`data/eu5_loc_cache.json`) is built on first run and invalidated when the game version changes.
@@ -143,8 +151,8 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 | 3 | File watcher + SQLite storage | ✅ Complete |
 | 4 | FastAPI backend + WebSocket | ✅ Complete |
 | 5 | React dashboard — stats, charts, event log | ✅ Complete |
-| 6 | AAR event notes, config persistence | ⏳ Next |
-| 7 | Second game (TBD) | ⏳ Blocked until Phase 6 done |
+| 6 | AAR event notes, config persistence | ✅ Complete |
+| 7 | Second game (TBD) | ⏳ Next |
 
 ---
 

@@ -28,16 +28,34 @@ export default function ConfigTab({ status, onStatusChange }) {
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
 
-  // Load field catalog on mount
+  // Load field catalog and saved config on mount
   useEffect(() => {
-    api.getFields()
-      .then((data) => {
-        setFields(data)
-        // Pre-select default-enabled fields
-        const defaults = data.filter((f) => f.default_enabled).map((f) => f.key)
+    // Load fields first, then overlay saved config
+    Promise.all([
+      api.getFields().catch(() => []),
+      api.getConfig().catch(() => null),
+    ]).then(([fieldData, savedConfig]) => {
+      setFields(fieldData)
+
+      if (savedConfig && savedConfig.game_install_path) {
+        // Restore saved config — use saved field keys if present
+        setConfig((prev) => ({
+          ...prev,
+          game: savedConfig.game || prev.game,
+          game_install_path: savedConfig.game_install_path || prev.game_install_path,
+          save_directory: savedConfig.save_directory || prev.save_directory,
+          snapshot_freq: savedConfig.snapshot_freq || prev.snapshot_freq,
+          language: savedConfig.language || prev.language,
+          enabled_field_keys: savedConfig.enabled_field_keys.length > 0
+            ? savedConfig.enabled_field_keys
+            : fieldData.filter((f) => f.default_enabled).map((f) => f.key),
+        }))
+      } else {
+        // No saved config — use default-enabled fields
+        const defaults = fieldData.filter((f) => f.default_enabled).map((f) => f.key)
         setConfig((prev) => ({ ...prev, enabled_field_keys: defaults }))
-      })
-      .catch(() => {/* fields endpoint may not be available yet */})
+      }
+    })
   }, [])
 
   const running = status?.running
