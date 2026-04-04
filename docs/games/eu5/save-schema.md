@@ -6,6 +6,34 @@
 
 ---
 
+## Table of Contents
+
+- [File Identification](#file-identification)
+- [Overall File Structure](#overall-file-structure)
+  - [Section 1 — Pre-ZIP Header (~395 KB)](#section-1--pre-zip-header-395-kb)
+  - [Section 2 — ZIP Archive](#section-2--zip-archive)
+- [Jomini Binary Token Format](#jomini-binary-token-format)
+- [Parsing Chain](#parsing-chain)
+- [Observed Metadata (from sample autosave)](#observed-metadata-from-sample-autosave)
+- [Top-Level JSON Structure](#top-level-json-structure-empirically-discovered)
+- [`metadata` Object](#metadata-object)
+- [`played_country` Object](#played_country-object)
+- [`countries` Object](#countries-object)
+  - [Country Object — Key Fields](#country-object--key-fields)
+- [`provinces` Object](#provinces-object)
+  - [Province Object — Key Fields](#province-object--key-fields-sample)
+- [`character_db` Object](#character_db-object)
+  - [Character Object — Key Fields](#character-object--key-fields)
+- [`situation_manager` Object](#situation_manager-object)
+- [Resolved Questions](#resolved-questions)
+- [Data Quality Audit — Field-by-Field](#data-quality-audit--field-by-field)
+  - [Identity & Metadata](#identity--metadata)
+  - [Economy — currency_data (resource pools)](#economy--currency_data-resource-pools)
+  - [Economy — Income & Expenses](#economy--income--expenses)
+- [Open Questions](#open-questions)
+
+---
+
 ## File Identification
 
 - **Extension:** `.eu5`
