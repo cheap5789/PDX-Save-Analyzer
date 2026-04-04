@@ -218,8 +218,9 @@ App starts
   └─> Config UI (game install path + save dir + frequency)
         ├─> Validate install path (localisation accessible?)
         ├─> Load localisation from <install>/game/main_menu/localization/<language>/
-        └─> Watcher armed, waiting for file change
+        └─> Watcher armed, start timestamp recorded, waiting for file change
               └─> Save detected
+                    ├─> File mtime < start timestamp? → skip (pre-existing save)
                     ├─> Parse metadata (playthrough_id, date)
                     ├─> Same playthrough_id as last?
                     │     ├─ YES → continue normally

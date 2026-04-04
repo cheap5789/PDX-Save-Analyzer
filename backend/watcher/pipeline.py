@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -75,6 +77,7 @@ class WatcherPipeline:
         self._current_playthrough_id: str = ""
         self._last_summary: GameSummary | None = None
         self._enabled_fields: list[FieldDef] = []
+        self._started_at: float = 0.0  # monotonic timestamp — files older than this are skipped
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -83,6 +86,9 @@ class WatcherPipeline:
     async def start(self) -> None:
         """Start the watcher pipeline."""
         logger.info(f"Starting pipeline for {self.config.game}")
+
+        # Record start time — saves with mtime before this are ignored
+        self._started_at = datetime.now(timezone.utc).timestamp()
 
         # Open database
         self._db = Database(self.config.db_path)
@@ -164,6 +170,19 @@ class WatcherPipeline:
             5. If due: extract snapshot and store
         """
         assert self._db is not None
+
+        # Skip saves that existed before the watcher started.
+        # Only files modified after pipeline start are processed.
+        # (A future "reprocess" / backfill option may lift this restriction.)
+        try:
+            file_mtime = os.path.getmtime(save_path)
+        except OSError:
+            logger.warning(f"Cannot stat {save_path.name} — skipping")
+            return
+        if file_mtime < self._started_at:
+            logger.debug(f"Skipping pre-existing save: {save_path.name}")
+            return
+
         logger.info(f"Processing: {save_path.name}")
 
         # Step 1: Parse

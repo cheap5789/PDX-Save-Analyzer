@@ -94,9 +94,37 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 **Decision:** The watchdog-based file watcher doesn't trigger immediately on file change. It monitors the file size at 0.5s intervals and only emits the path once the size has been stable for 2 seconds. This handles EU5's large saves (~34MB) which take several seconds to write.
 **Rationale:** User chose "completion marker" over simpler debounce. Polling file size stability is OS-agnostic and more reliable than file-lock detection for cross-platform use.
 
+### [2026-04-04] Watcher ignores pre-existing saves by default
+**Decision:** On startup the pipeline records a UTC timestamp. Any save file whose modification time is older than this timestamp is silently skipped. Only saves written *after* the watcher starts are processed.
+**Rationale:** Prevents accidental bulk-processing of a directory full of old saves on first launch. A "backfill / reprocess" option can be added later as an explicit opt-in.
+
 ### [2026-04-04] Full stack is async from the start
 **Decision:** The watcher pipeline, database layer, and file watcher all use asyncio + aiosqlite. The pipeline runs as an asyncio task that can be embedded directly into FastAPI in Phase 4.
 **Rationale:** Avoids a sync→async rewrite in Phase 4. aiosqlite is already a dependency.
+
+### [2026-04-04] Minimal REST + WebSocket API (Phase 4)
+**Decision:** The API layer is a thin REST + WebSocket skin over the existing pipeline. REST endpoints expose CRUD for playthroughs, snapshots, events, and the field catalog. A single `/ws` endpoint pushes live updates (snapshots, events, status changes) to all connected clients.
+**Rationale:** No GraphQL or gRPC complexity needed. REST handles queries; WebSocket handles push. The frontend is the only consumer.
+
+### [2026-04-04] Frontend-triggered start (Phase 4)
+**Decision:** The server boots idle. The frontend sends `POST /api/start` with config (game install path, save directory, frequency, language, enabled fields) to launch the watcher pipeline. `POST /api/stop` tears it down.
+**Rationale:** User chose frontend-triggered over auto-start. This keeps the backend stateless on boot and lets the React UI own the configuration flow — matching the existing design decision that a startup UI is always required before the watcher activates.
+
+### [2026-04-04] Dashboard: single-page with tabs, Tailwind CSS, Recharts (Phase 5)
+**Decision:** The React dashboard is a single-page app with four tabs: Overview, Charts, Events, Config. Styled with Tailwind CSS utility classes (no component library). Line charts via Recharts for all time-series data. Dark theme matching the Paradox aesthetic.
+**Rationale:** User chose simplicity over complexity at every decision point. Single-page avoids routing overhead. Tailwind is fast to prototype. Line-only charts cover the primary use case (tracking numeric fields over game time).
+
+### [2026-04-04] Auto-reconnect on page load (Phase 5)
+**Decision:** On page load, the frontend calls `GET /api/status`. If a pipeline is running, it connects WebSocket and shows live data immediately. If not, it defaults to the Config tab.
+**Rationale:** Matches the "auto-resume" design decision. Players refreshing the browser mid-session shouldn't lose their live feed.
+
+### [2026-04-04] Country comparison: picker + overlay (Phase 5)
+**Decision:** Country comparison uses a checkbox picker (up to 8 countries). Selected countries are overlaid as separate colored lines on the same Recharts chart. No side-by-side panels.
+**Rationale:** Overlay is the most space-efficient comparison method and the most natural for time-series data. 8-country cap keeps charts readable.
+
+### [2026-04-04] Event log: chronological feed with type filter (Phase 5)
+**Decision:** Events displayed as a scrollable card feed, newest first. Each card shows an icon, event type, game date, and payload summary. Filter buttons for each event type with counts.
+**Rationale:** Simple and functional. Timeline view deferred — can be added later without restructuring.
 
 ### [2026-04-04] Localisation read directly from game install, not shipped with the app
 **Decision:** The app reads localisation `.yml` files at runtime from `<EU5 install>/game/main_menu/localization/<language>/`. No proprietary game files are stored in or shipped with the project.
@@ -113,9 +141,9 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 | 1 | Toolbox — save explorer, schema dumper, key finder | ✅ Complete |
 | 2 | Rakaly integration + EU5 parser | ✅ Complete |
 | 3 | File watcher + SQLite storage | ✅ Complete |
-| 4 | FastAPI backend + WebSocket | ⏳ Next |
-| 5 | React dashboard — stats, charts, event log | ⏳ Pending |
-| 6 | AAR event notes, config persistence | ⏳ Pending |
+| 4 | FastAPI backend + WebSocket | ✅ Complete |
+| 5 | React dashboard — stats, charts, event log | ✅ Complete |
+| 6 | AAR event notes, config persistence | ⏳ Next |
 | 7 | Second game (TBD) | ⏳ Blocked until Phase 6 done |
 
 ---
