@@ -1,5 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
-import { useApi } from '../../hooks/useApi'
+import { useState, useMemo, useCallback } from 'react'
 import EventCard from '../EventCard'
 
 const EVENT_TYPES = [
@@ -18,57 +17,21 @@ const EVENT_TYPES = [
 ]
 
 /**
- * EventsTab — merges historical events (from REST, with aar_note + id) and
- * live events (from WebSocket, no id yet). Historical events load once when
- * the playthrough_id becomes available.
+ * EventsTab — receives merged historical + live events from App.jsx.
+ * Handles filtering by type and inline AAR note editing.
  */
-export default function EventsTab({ events: liveEvents, status }) {
-  const api = useApi()
+export default function EventsTab({ events: allEvents, status, onEventNoteUpdated }) {
   const [filter, setFilter] = useState('all')
-  const [historicalEvents, setHistoricalEvents] = useState([])
-  const [loadedPlaythrough, setLoadedPlaythrough] = useState(null)
-
-  // Load historical events from DB when playthrough is known
-  useEffect(() => {
-    const ptId = status?.playthrough_id
-    if (!ptId || ptId === loadedPlaythrough) return
-
-    api.getEvents(ptId, {})
-      .then((data) => {
-        // Parse payload if it's a string
-        const parsed = data.map((e) => ({
-          ...e,
-          payload: typeof e.payload === 'string' ? JSON.parse(e.payload) : e.payload,
-        }))
-        setHistoricalEvents(parsed)
-        setLoadedPlaythrough(ptId)
-      })
-      .catch(() => {})
-  }, [status?.playthrough_id])
-
-  // Merge: historical (with ids + notes) + live (new ones not yet in DB).
-  // Live events that match a historical event by date+type are skipped (already loaded).
-  const allEvents = useMemo(() => {
-    const historicalKeys = new Set(
-      historicalEvents.map((e) => `${e.game_date}|${e.event_type}`)
-    )
-    const newLive = liveEvents.filter(
-      (e) => !historicalKeys.has(`${e.game_date}|${e.event_type}`)
-    )
-    return [...historicalEvents, ...newLive]
-  }, [historicalEvents, liveEvents])
 
   const filtered = useMemo(() => {
     const list = filter === 'all' ? allEvents : allEvents.filter((e) => e.event_type === filter)
     return [...list].reverse()
   }, [allEvents, filter])
 
-  // Callback when a note is saved — update the historical events list in place
+  // Callback when a note is saved — propagate up to App
   const handleNoteUpdated = useCallback((eventId, noteText) => {
-    setHistoricalEvents((prev) =>
-      prev.map((e) => (e.id === eventId ? { ...e, aar_note: noteText } : e))
-    )
-  }, [])
+    if (onEventNoteUpdated) onEventNoteUpdated(eventId, noteText)
+  }, [onEventNoteUpdated])
 
   return (
     <div className="p-6 space-y-4">

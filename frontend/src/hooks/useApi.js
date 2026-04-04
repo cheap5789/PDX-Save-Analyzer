@@ -65,7 +65,14 @@ export function useApi() {
     updateAarNote: (eventId, note) =>
       request('PATCH', `/api/events/${eventId}/note`, { note }),
 
-    /** GET /api/config — load persisted config */
-    getConfig: () => request('GET', '/api/config'),
+    /** GET /api/config?game= — load persisted config */
+    getConfig: (game = 'eu5') => request('GET', `/api/config?game=${encodeURIComponent(game)}`),
+
+    /** POST /api/config — save config without starting pipeline */
+    saveConfig: (config) => request('POST', '/api/config', config),
+
+    /** POST /api/load-playthrough — open DB for browsing */
+    loadPlaythrough: (game, playthroughId) =>
+      request('POST', '/api/load-playthrough', { game, playthrough_id: playthroughId }),
   }
 }

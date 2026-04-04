@@ -25,7 +25,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Qu
 from backend.api.schemas import (
     StartRequest, StatusResponse, PlaythroughResponse,
     SnapshotResponse, EventResponse, FieldDefResponse, WsMessage,
-    UpdateAarNoteRequest, SavedConfig,
+    UpdateAarNoteRequest, SavedConfig, LoadPlaythroughRequest,
 )
 from backend.config import SessionConfig
 from backend.parser.eu5.field_catalog import FIELD_CATALOG
@@ -104,10 +104,16 @@ async def broadcast_status() -> None:
 @router.post("/api/start", response_model=StatusResponse)
 async def start_pipeline(req: StartRequest) -> StatusResponse:
     """Launch the watcher pipeline with the given configuration."""
-    global _pipeline, _db
+    global _pipeline, _db, _browse_db, _browse_playthrough_id
 
     if _pipeline and _pipeline.is_running:
         raise HTTPException(400, "Pipeline is already running. Stop it first.")
+
+    # Close browse-mode DB if open (mutually exclusive with pipeline)
+    if _browse_db:
+        await _browse_db.close()
+        _browse_db = None
+        _browse_playthrough_id = None
 
     config = SessionConfig(
         game=req.game,
@@ -119,7 +125,7 @@ async def start_pipeline(req: StartRequest) -> StatusResponse:
     )
 
     # Persist config for next session auto-fill
-    _save_config(req)
+    _save_config_from_request(req)
 
     # Validate paths
     if not config.save_directory.exists():
@@ -184,29 +190,48 @@ async def get_status() -> StatusResponse:
 
 
 async def _build_status() -> StatusResponse:
-    if not _pipeline or not _pipeline.is_running:
-        return StatusResponse(running=False)
+    # Pipeline running → live status
+    if _pipeline and _pipeline.is_running:
+        config = _pipeline.config
+        pt_id = _pipeline._current_playthrough_id
 
-    config = _pipeline.config
-    pt_id = _pipeline._current_playthrough_id
+        snap_count = 0
+        evt_count = 0
+        if _db and pt_id:
+            snap_count = await _db.snapshot_count(pt_id)
+            evt_count = await _db.event_count(pt_id)
 
-    snap_count = 0
-    evt_count = 0
-    if _db and pt_id:
-        snap_count = await _db.snapshot_count(pt_id)
-        evt_count = await _db.event_count(pt_id)
+        return StatusResponse(
+            running=True,
+            game=config.game,
+            playthrough_id=pt_id or None,
+            country_tag=config.country_tag or None,
+            country_name=config.country_name or None,
+            game_date=await _db.get_last_game_date(pt_id) if _db and pt_id else None,
+            snapshot_freq=config.snapshot_freq,
+            snapshot_count=snap_count,
+            event_count=evt_count,
+        )
 
-    return StatusResponse(
-        running=True,
-        game=config.game,
-        playthrough_id=pt_id or None,
-        country_tag=config.country_tag or None,
-        country_name=config.country_name or None,
-        game_date=await _db.get_last_game_date(pt_id) if _db and pt_id else None,
-        snapshot_freq=config.snapshot_freq,
-        snapshot_count=snap_count,
-        event_count=evt_count,
-    )
+    # Browse mode → show loaded playthrough info
+    if _browse_db and _browse_playthrough_id:
+        pt = await _browse_db.get_playthrough(_browse_playthrough_id)
+        if pt:
+            snap_count = await _browse_db.snapshot_count(_browse_playthrough_id)
+            evt_count = await _browse_db.event_count(_browse_playthrough_id)
+            return StatusResponse(
+                running=False,
+                game=pt.get("game", ""),
+                playthrough_id=_browse_playthrough_id,
+                country_tag=pt.get("country_tag"),
+                country_name=pt.get("country_name"),
+                game_date=pt.get("last_game_date"),
+                snapshot_freq=pt.get("snapshot_freq"),
+                snapshot_count=snap_count,
+                event_count=evt_count,
+            )
+
+    return StatusResponse(running=False)
 
 
 # ---------------------------------------------------------------------------
@@ -215,12 +240,27 @@ async def _build_status() -> StatusResponse:
 
 @router.get("/api/playthroughs", response_model=list[PlaythroughResponse])
 async def list_playthroughs(
-    game: str | None = Query(None, description="Filter by game"),
+    game: str = Query("eu5", description="Game to list playthroughs for"),
 ) -> list[PlaythroughResponse]:
-    if not _db:
-        raise HTTPException(400, "No database open. Start the pipeline first.")
-    rows = await _db.list_playthroughs(game=game)
-    return [PlaythroughResponse(**r) for r in rows]
+    # Try active DB first, otherwise open the game's DB for a quick read
+    if _db:
+        rows = await _db.list_playthroughs(game=game)
+        return [PlaythroughResponse(**r) for r in rows]
+    if _browse_db:
+        rows = await _browse_db.list_playthroughs(game=game)
+        return [PlaythroughResponse(**r) for r in rows]
+
+    # No active DB — try to open the game's DB read-only for listing
+    db_path = Path("data") / f"{game}.db"
+    if not db_path.exists():
+        return []  # no data yet, return empty list instead of error
+    temp_db = Database(db_path)
+    await temp_db.open()
+    try:
+        rows = await temp_db.list_playthroughs(game=game)
+        return [PlaythroughResponse(**r) for r in rows]
+    finally:
+        await temp_db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -233,9 +273,8 @@ async def get_snapshots(
     limit: int = Query(0, ge=0, description="Max results (0=all)"),
     after: str | None = Query(None, description="Only snapshots after this game date"),
 ) -> list[SnapshotResponse]:
-    if not _db:
-        raise HTTPException(400, "No database open. Start the pipeline first.")
-    rows = await _db.get_snapshots(playthrough_id, limit=limit, after_date=after)
+    db = await _get_db()
+    rows = await db.get_snapshots(playthrough_id, limit=limit, after_date=after)
     result = []
     for r in rows:
         d = dict(r)
@@ -254,9 +293,8 @@ async def get_events(
     event_type: str | None = Query(None, description="Filter by event type"),
     limit: int = Query(0, ge=0, description="Max results (0=all)"),
 ) -> list[EventResponse]:
-    if not _db:
-        raise HTTPException(400, "No database open. Start the pipeline first.")
-    rows = await _db.get_events(playthrough_id, event_type=event_type, limit=limit)
+    db = await _get_db()
+    rows = await db.get_events(playthrough_id, event_type=event_type, limit=limit)
     result = []
     for r in rows:
         d = dict(r)
@@ -290,43 +328,119 @@ async def get_fields(
 
 
 # ---------------------------------------------------------------------------
-# Config persistence
+# Config persistence — one file per game: data/{game}_config.json
 # ---------------------------------------------------------------------------
 
-_CONFIG_PATH = Path("data/user_config.json")
+
+def _config_path(game: str) -> Path:
+    return Path("data") / f"{game}_config.json"
 
 
-def _save_config(req: StartRequest) -> None:
-    """Persist the config to disk so it can be restored on next launch."""
-    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    config_data = SavedConfig(
+def _save_config_from_request(req: StartRequest) -> None:
+    """Persist the config to a game-specific JSON file."""
+    _save_config_obj(SavedConfig(
         game=req.game,
         game_install_path=req.game_install_path,
         save_directory=req.save_directory,
         snapshot_freq=req.snapshot_freq,
         language=req.language,
         enabled_field_keys=req.enabled_field_keys,
-    )
-    _CONFIG_PATH.write_text(config_data.model_dump_json(indent=2))
+    ))
 
 
-def _load_config() -> SavedConfig | None:
-    """Load the most recently saved config, or None if not found."""
-    if not _CONFIG_PATH.exists():
+def _save_config_obj(cfg: SavedConfig) -> None:
+    path = _config_path(cfg.game)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(cfg.model_dump_json(indent=2))
+
+
+def _load_config(game: str = "eu5") -> SavedConfig | None:
+    path = _config_path(game)
+    if not path.exists():
         return None
     try:
-        return SavedConfig.model_validate_json(_CONFIG_PATH.read_text())
+        return SavedConfig.model_validate_json(path.read_text())
     except Exception:
         return None
 
 
 @router.get("/api/config", response_model=SavedConfig)
-async def get_config() -> SavedConfig:
-    """Return the persisted config, or defaults if none saved."""
-    saved = _load_config()
+async def get_config(
+    game: str = Query("eu5", description="Game to load config for"),
+) -> SavedConfig:
+    """Return the persisted config for a game, or defaults if none saved."""
+    saved = _load_config(game)
     if saved:
         return saved
-    return SavedConfig()
+    # Return defaults with all fields enabled
+    all_keys = [f.key for f in FIELD_CATALOG]
+    return SavedConfig(game=game, enabled_field_keys=all_keys)
+
+
+@router.post("/api/config", response_model=SavedConfig)
+async def save_config(cfg: SavedConfig) -> SavedConfig:
+    """Save config to disk without starting the pipeline."""
+    _save_config_obj(cfg)
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# POST /api/load-playthrough — open DB for browsing without running pipeline
+# ---------------------------------------------------------------------------
+
+_browse_db: Database | None = None   # standalone DB for read-only browsing
+_browse_playthrough_id: str | None = None
+
+
+async def _get_db() -> Database:
+    """Return the active DB — either from the running pipeline or from browse mode."""
+    if _db:
+        return _db
+    if _browse_db:
+        return _browse_db
+    raise HTTPException(400, "No database open. Start the pipeline or load a playthrough.")
+
+
+@router.post("/api/load-playthrough")
+async def load_playthrough(req: LoadPlaythroughRequest) -> dict:
+    """Open a game DB and set the active playthrough for browsing historical data."""
+    global _browse_db, _browse_playthrough_id
+
+    if _pipeline and _pipeline.is_running:
+        raise HTTPException(400, "Pipeline is running. Stop it first to browse a different playthrough.")
+
+    db_path = Path("data") / f"{req.game}.db"
+    if not db_path.exists():
+        raise HTTPException(404, f"No database found for game '{req.game}'. No data has been recorded yet.")
+
+    # Close previous browse DB if open
+    if _browse_db:
+        await _browse_db.close()
+
+    _browse_db = Database(db_path)
+    await _browse_db.open()
+
+    # Verify playthrough exists
+    pt = await _browse_db.get_playthrough(req.playthrough_id)
+    if not pt:
+        await _browse_db.close()
+        _browse_db = None
+        raise HTTPException(404, f"Playthrough '{req.playthrough_id}' not found in {req.game}.db")
+
+    _browse_playthrough_id = req.playthrough_id
+    snap_count = await _browse_db.snapshot_count(req.playthrough_id)
+    evt_count = await _browse_db.event_count(req.playthrough_id)
+
+    return {
+        "loaded": True,
+        "playthrough_id": req.playthrough_id,
+        "game": req.game,
+        "country_tag": pt.get("country_tag", ""),
+        "country_name": pt.get("country_name", ""),
+        "last_game_date": pt.get("last_game_date", ""),
+        "snapshot_count": snap_count,
+        "event_count": evt_count,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -336,13 +450,12 @@ async def get_config() -> SavedConfig:
 @router.patch("/api/events/{event_id}/note", response_model=EventResponse)
 async def update_event_note(event_id: int, req: UpdateAarNoteRequest) -> EventResponse:
     """Set or update the AAR note on an event."""
-    if not _db:
-        raise HTTPException(400, "No database open. Start the pipeline first.")
+    db = await _get_db()
 
-    await _db.update_aar_note(event_id, req.note)
+    await db.update_aar_note(event_id, req.note)
 
     # Fetch the updated event to return it
-    cursor = await _db.conn.execute(
+    cursor = await db.conn.execute(
         "SELECT * FROM events WHERE id = ?", (event_id,)
     )
     row = await cursor.fetchone()

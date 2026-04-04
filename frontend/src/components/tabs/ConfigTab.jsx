@@ -16,29 +16,36 @@ const FIELD_CATEGORIES = [
 
 export default function ConfigTab({ status, onStatusChange }) {
   const api = useApi()
+  const game = 'eu5' // hardcoded for now — game-dependent
+
   const [config, setConfig] = useState({
-    game: 'eu5',
+    game,
     game_install_path: 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Europa Universalis V',
     save_directory: '',
     snapshot_freq: 'yearly',
     language: 'english',
     enabled_field_keys: [],
+    selected_playthrough_id: '',
   })
   const [fields, setFields] = useState([])
+  const [playthroughs, setPlaythroughs] = useState([])
+  // Initialize dropdown from current status (survives tab switch) or empty
+  const [selectedPlaythrough, setSelectedPlaythrough] = useState(status?.playthrough_id || '')
   const [error, setError] = useState(null)
+  const [success, setSuccess] = useState(null)
   const [loading, setLoading] = useState(false)
 
-  // Load field catalog and saved config on mount
+  // Load field catalog, saved config, and existing playthroughs on mount
   useEffect(() => {
-    // Load fields first, then overlay saved config
     Promise.all([
       api.getFields().catch(() => []),
-      api.getConfig().catch(() => null),
-    ]).then(([fieldData, savedConfig]) => {
+      api.getConfig(game).catch(() => null),
+      api.getPlaythroughs(game).catch(() => []),
+    ]).then(([fieldData, savedConfig, ptList]) => {
       setFields(fieldData)
+      setPlaythroughs(ptList)
 
       if (savedConfig && savedConfig.game_install_path) {
-        // Restore saved config — use saved field keys if present
         setConfig((prev) => ({
           ...prev,
           game: savedConfig.game || prev.game,
@@ -48,20 +55,40 @@ export default function ConfigTab({ status, onStatusChange }) {
           language: savedConfig.language || prev.language,
           enabled_field_keys: savedConfig.enabled_field_keys.length > 0
             ? savedConfig.enabled_field_keys
-            : fieldData.filter((f) => f.default_enabled).map((f) => f.key),
+            : fieldData.map((f) => f.key),
+          selected_playthrough_id: savedConfig.selected_playthrough_id || '',
         }))
+        // Restore the dropdown: prefer current status (active playthrough), then saved config
+        const restoredPt = status?.playthrough_id || savedConfig.selected_playthrough_id || ''
+        if (restoredPt) {
+          setSelectedPlaythrough(restoredPt)
+        }
       } else {
-        // No saved config — use default-enabled fields
-        const defaults = fieldData.filter((f) => f.default_enabled).map((f) => f.key)
-        setConfig((prev) => ({ ...prev, enabled_field_keys: defaults }))
+        // No saved config — all fields enabled by default
+        setConfig((prev) => ({ ...prev, enabled_field_keys: fieldData.map((f) => f.key) }))
       }
     })
   }, [])
 
   const running = status?.running
 
+  // --- Action handlers ---
+
+  const handleSaveConfig = async () => {
+    setError(null)
+    setSuccess(null)
+    try {
+      await api.saveConfig(config)
+      setSuccess('Config saved.')
+      setTimeout(() => setSuccess(null), 3000)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
   const handleStart = async () => {
     setError(null)
+    setSuccess(null)
     setLoading(true)
     try {
       await api.start(config)
@@ -76,11 +103,33 @@ export default function ConfigTab({ status, onStatusChange }) {
 
   const handleStop = async () => {
     setError(null)
+    setSuccess(null)
     setLoading(true)
     try {
       await api.stop()
       const newStatus = await api.getStatus()
       onStatusChange(newStatus)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleLoadPlaythrough = async () => {
+    if (!selectedPlaythrough) return
+    setError(null)
+    setSuccess(null)
+    setLoading(true)
+    try {
+      const result = await api.loadPlaythrough(game, selectedPlaythrough)
+      // Persist the selected playthrough in config
+      const updatedConfig = { ...config, selected_playthrough_id: selectedPlaythrough }
+      setConfig(updatedConfig)
+      await api.saveConfig(updatedConfig).catch(() => {})
+      const newStatus = await api.getStatus()
+      onStatusChange(newStatus)
+      setSuccess(`Loaded playthrough: ${result.country_name || result.country_tag} (${result.snapshot_count} snapshots, ${result.event_count} events)`)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -97,15 +146,27 @@ export default function ConfigTab({ status, onStatusChange }) {
     })
   }
 
+  const selectAll = () => setConfig((prev) => ({ ...prev, enabled_field_keys: fields.map((f) => f.key) }))
+  const selectNone = () => setConfig((prev) => ({ ...prev, enabled_field_keys: [] }))
+
   const inputStyle = {
     background: 'var(--color-surface-alt)',
     color: 'var(--color-text)',
     border: '1px solid var(--color-border)',
   }
 
+  const btnBase = 'px-5 py-2 rounded font-medium text-sm transition-colors'
+
   return (
     <div className="p-6 max-w-3xl mx-auto space-y-6">
-      <h2 className="text-lg font-semibold">Pipeline Configuration</h2>
+      <div className="flex items-center gap-3">
+        <h2 className="text-lg font-semibold">EU5 Configuration</h2>
+        {running && (
+          <span className="text-xs px-2 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.2)', color: 'var(--color-success)' }}>
+            Pipeline running
+          </span>
+        )}
+      </div>
 
       {/* Path inputs */}
       <div className="space-y-3">
@@ -173,9 +234,17 @@ export default function ConfigTab({ status, onStatusChange }) {
 
       {/* Field toggles */}
       <div>
-        <label className="block text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
-          Tracked Fields ({config.enabled_field_keys.length} / {fields.length})
-        </label>
+        <div className="flex items-center gap-3 mb-2">
+          <label className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+            Tracked Fields ({config.enabled_field_keys.length} / {fields.length})
+          </label>
+          {!running && (
+            <div className="flex gap-1">
+              <button onClick={selectAll} className="text-xs px-2 py-0.5 rounded" style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text-muted)' }}>All</button>
+              <button onClick={selectNone} className="text-xs px-2 py-0.5 rounded" style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text-muted)' }}>None</button>
+            </div>
+          )}
+        </div>
         <div className="space-y-3">
           {FIELD_CATEGORIES.map((cat) => {
             const catFields = fields.filter((f) => f.category === cat)
@@ -214,33 +283,94 @@ export default function ConfigTab({ status, onStatusChange }) {
         </div>
       </div>
 
-      {/* Error display */}
+      {/* Load existing playthrough section */}
+      {playthroughs.length > 0 && !running && (
+        <div className="rounded-lg p-4" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
+          <label className="block text-xs mb-2" style={{ color: 'var(--color-text-muted)' }}>
+            Load existing playthrough
+          </label>
+          <div className="flex gap-2">
+            <select
+              value={selectedPlaythrough}
+              onChange={(e) => setSelectedPlaythrough(e.target.value)}
+              className="flex-1 px-3 py-2 rounded text-sm"
+              style={inputStyle}
+            >
+              <option value="">Select a playthrough...</option>
+              {playthroughs.map((pt) => (
+                <option key={pt.id} value={pt.id}>
+                  {pt.country_name || pt.country_tag || 'Unknown'} — {pt.playthrough_name || pt.id.slice(0, 8)} ({pt.last_game_date || '?'})
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={handleLoadPlaythrough}
+              disabled={!selectedPlaythrough || loading}
+              className={btnBase + ' text-white'}
+              style={{
+                background: !selectedPlaythrough || loading ? 'var(--color-surface-alt)' : 'var(--color-accent)',
+                cursor: !selectedPlaythrough || loading ? 'not-allowed' : 'pointer',
+              }}
+            >
+              Load
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Messages */}
       {error && (
         <div className="rounded p-3 text-sm" style={{ background: 'rgba(239,68,68,0.15)', color: 'var(--color-danger)' }}>
           {error}
         </div>
       )}
+      {success && (
+        <div className="rounded p-3 text-sm" style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--color-success)' }}>
+          {success}
+        </div>
+      )}
 
-      {/* Start / Stop button */}
-      <div className="flex gap-3">
-        {!running ? (
+      {/* Action buttons */}
+      <div className="flex gap-3 pt-2" style={{ borderTop: '1px solid var(--color-border)' }}>
+        {/* Save Config — always available when not running */}
+        {!running && (
+          <button
+            onClick={handleSaveConfig}
+            disabled={loading}
+            className={btnBase}
+            style={{
+              background: 'var(--color-surface-alt)',
+              color: 'var(--color-text)',
+              border: '1px solid var(--color-border)',
+              cursor: loading ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Save Config
+          </button>
+        )}
+
+        {/* Start Pipeline — only when not running */}
+        {!running && (
           <button
             onClick={handleStart}
             disabled={loading || !config.save_directory}
-            className="px-6 py-2 rounded font-medium text-sm text-white transition-colors"
+            className={btnBase + ' text-white'}
             style={{
-              background: loading ? 'var(--color-surface-alt)' : 'var(--color-accent)',
+              background: loading || !config.save_directory ? 'var(--color-surface-alt)' : 'var(--color-success)',
               cursor: loading || !config.save_directory ? 'not-allowed' : 'pointer',
               opacity: !config.save_directory ? 0.5 : 1,
             }}
           >
             {loading ? 'Starting...' : 'Start Pipeline'}
           </button>
-        ) : (
+        )}
+
+        {/* Stop Pipeline — only when running */}
+        {running && (
           <button
             onClick={handleStop}
             disabled={loading}
-            className="px-6 py-2 rounded font-medium text-sm text-white transition-colors"
+            className={btnBase + ' text-white'}
             style={{
               background: loading ? 'var(--color-surface-alt)' : 'var(--color-danger)',
               cursor: loading ? 'not-allowed' : 'pointer',

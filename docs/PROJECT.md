@@ -130,9 +130,13 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 **Decision:** Each event card has an "Add note" / "Edit note" button that expands an inline text editor. Notes are saved via `PATCH /api/events/{id}/note` to the existing `aar_note` column. Historical events (with notes) are loaded from REST on tab open and merged with live WebSocket events.
 **Rationale:** User chose the simplest option. A separate AAR journal or export can be layered on later without restructuring the event model.
 
-### [2026-04-04] Config persistence: last session only, data/user_config.json (Phase 6)
-**Decision:** On `POST /api/start`, the config (game, paths, frequency, language, enabled fields) is saved to `data/user_config.json`. On page load, `GET /api/config` returns the saved config to pre-fill the Config tab. One file, overwritten each time, one config per game.
-**Rationale:** Minimal friction. User doesn't need to re-enter paths every session. The file is already in `.gitignore`. Per-playthrough config overrides deferred.
+### [2026-04-04] Config persistence: game-keyed, data/{game}_config.json (Phase 6)
+**Decision:** Config is saved per game as `data/{game}_config.json` (e.g. `data/eu5_config.json`). `POST /api/config` saves config without starting the pipeline. `GET /api/config?game=eu5` loads it. On `POST /api/start`, config is also persisted automatically.
+**Rationale:** Minimal friction. User doesn't need to re-enter paths every session. Game-keyed files prepare for multi-game support. The file is already in `.gitignore`.
+
+### [2026-04-04] ConfigTab redesign: 3 action buttons, browse mode, all fields enabled
+**Decision:** ConfigTab has three action buttons: Save Config (always available when not running), Start Pipeline (when stopped), Stop Pipeline (when running). A playthrough picker loads historical data without running the pipeline ("browse mode"). All 44 fields default to enabled. Config is game-scoped (EU5 hardcoded for now).
+**Rationale:** Decoupling "save config" from "start pipeline" lets users adjust settings without committing to a run. Browse mode lets users review past campaign data. All-fields-on by default avoids the "empty dashboard" experience — users can disable what they don't want rather than enabling what they do.
 
 ### [2026-04-04] Localisation enriches all event payloads and snapshots
 **Decision:** Summary extraction and event diffing now populate display-name fields alongside raw keys. Countries get `country_display`, `culture_display`, `religion_display`. Wars get `name_display`. Ages get `current_age_display`. Event payloads include both `from_religion_key` and `from_religion` (display name). Snapshots include `current_age_display`.

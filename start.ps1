@@ -15,7 +15,7 @@ param(
     [switch]$SkipInstall
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 $ProjectRoot = $PSScriptRoot
 
 # ---------------------------------------------------------------------------
@@ -144,23 +144,26 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 try {
-    # Stream backend output to console
+    # Stream backend + frontend output to console.
+    # Uvicorn writes INFO logs to stderr, which PowerShell surfaces as
+    # ErrorRecords on the job. We use -ErrorAction SilentlyContinue so
+    # those don't throw and kill the loop.
     while ($true) {
         # Check if either job has died
         if ($BackendJob.State -eq "Completed" -or $BackendJob.State -eq "Failed") {
-            Write-Warn "Backend process exited"
-            Receive-Job $BackendJob 2>&1 | Write-Host
+            Write-Warn "Backend process exited (state: $($BackendJob.State))"
+            Receive-Job $BackendJob -ErrorAction SilentlyContinue 2>&1 | ForEach-Object { Write-Host "[backend] $_" }
             break
         }
         if ($FrontendJob.State -eq "Completed" -or $FrontendJob.State -eq "Failed") {
-            Write-Warn "Frontend process exited"
-            Receive-Job $FrontendJob 2>&1 | Write-Host
+            Write-Warn "Frontend process exited (state: $($FrontendJob.State))"
+            Receive-Job $FrontendJob -ErrorAction SilentlyContinue 2>&1 | ForEach-Object { Write-Host "[frontend] $_" }
             break
         }
 
-        # Print any new output from both jobs
-        Receive-Job $BackendJob 2>&1 | ForEach-Object { Write-Host "[backend] $_" -ForegroundColor DarkGray }
-        Receive-Job $FrontendJob 2>&1 | ForEach-Object { Write-Host "[frontend] $_" -ForegroundColor DarkGray }
+        # Print any new output from both jobs (stderr included via 2>&1)
+        Receive-Job $BackendJob  -ErrorAction SilentlyContinue 2>&1 | ForEach-Object { Write-Host "[backend]  $_" -ForegroundColor DarkGray }
+        Receive-Job $FrontendJob -ErrorAction SilentlyContinue 2>&1 | ForEach-Object { Write-Host "[frontend] $_" -ForegroundColor DarkGray }
 
         Start-Sleep -Milliseconds 500
     }

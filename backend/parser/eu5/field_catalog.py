@@ -69,7 +69,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="estimated_monthly_income_trade_and_tax",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="last_month_gold_income",
@@ -77,7 +77,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="last_month_gold_income",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="inflation",
@@ -93,7 +93,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="balance_history_2.Inflation",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="current_tax_base",
@@ -101,7 +101,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="current_tax_base",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="potential_tax_base",
@@ -109,7 +109,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="potential_tax_base",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="monthly_trade_value",
@@ -117,7 +117,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="monthly_trade_value",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="monthly_trade_balance",
@@ -125,7 +125,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="monthly_trade_balance",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="total_produced",
@@ -133,7 +133,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="total_produced",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="last_months_tax_income",
@@ -141,7 +141,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="last_months_tax_income",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="last_months_army_maintenance",
@@ -149,7 +149,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="last_months_army_maintenance",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="last_months_fort_maintenance",
@@ -157,7 +157,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="last_months_fort_maintenance",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="last_months_building_maintenance",
@@ -165,7 +165,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="last_months_building_maintenance",
         value_type="float",
         category="economy",
-        default_enabled=False,
+        default_enabled=True,
     ),
 
     # ── Military ──────────────────────────────────────────────────────────
@@ -183,7 +183,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="balance_history_2.Manpower",
         value_type="float",
         category="military",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="max_manpower",
@@ -199,7 +199,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="monthly_manpower",
         value_type="float",
         category="military",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="army_tradition",
@@ -215,7 +215,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="balance_history_2.ArmyTradition",
         value_type="float",
         category="military",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="war_exhaustion",
@@ -242,7 +242,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="balance_history_2.Stability",
         value_type="float",
         category="stability",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="government_power",
@@ -258,7 +258,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="balance_history_2.GovernmentPower",
         value_type="float",
         category="stability",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="complacency_monthly",
@@ -266,7 +266,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="balance_history_2.Complacency",
         value_type="float",
         category="stability",
-        default_enabled=False,
+        default_enabled=True,
     ),
 
     # ── Prestige & Diplomacy ──────────────────────────────────────────────
@@ -284,7 +284,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="balance_history_2.Prestige",
         value_type="float",
         category="diplomacy",
-        default_enabled=False,
+        default_enabled=True,
     ),
 
     # ── Religion ──────────────────────────────────────────────────────────
@@ -294,7 +294,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="currency_data.religious_influence",
         value_type="float",
         category="religion",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="religious_influence_monthly",
@@ -302,7 +302,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="balance_history_2.ReligiousInfluence",
         value_type="float",
         category="religion",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="karma",
@@ -310,7 +310,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="currency_data.karma",
         value_type="float",
         category="religion",
-        default_enabled=False,
+        default_enabled=True,
         description="Religion-specific mechanic (unverified which religions use it)",
     ),
     FieldDef(
@@ -319,7 +319,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="currency_data.purity",
         value_type="float",
         category="religion",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="righteousness",
@@ -327,7 +327,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="currency_data.righteousness",
         value_type="float",
         category="religion",
-        default_enabled=False,
+        default_enabled=True,
     ),
 
     # ── Score & Rank ──────────────────────────────────────────────────────
@@ -353,7 +353,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="score.score_rating.ADM",
         value_type="float",
         category="score",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="score_dip",
@@ -361,7 +361,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="score.score_rating.DIP",
         value_type="float",
         category="score",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="score_mil",
@@ -369,7 +369,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="score.score_rating.MIL",
         value_type="float",
         category="score",
-        default_enabled=False,
+        default_enabled=True,
     ),
 
     # ── Demographics ──────────────────────────────────────────────────────
@@ -389,7 +389,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="starting_technology_level",
         value_type="int",
         category="technology",
-        default_enabled=False,
+        default_enabled=True,
         description="Starting tech level (static — may not change during game)",
     ),
     FieldDef(
@@ -398,7 +398,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="naval_range",
         value_type="float",
         category="technology",
-        default_enabled=False,
+        default_enabled=True,
     ),
     FieldDef(
         key="colonial_range",
@@ -406,7 +406,7 @@ FIELD_CATALOG: list[FieldDef] = [
         json_path="colonial_range",
         value_type="float",
         category="technology",
-        default_enabled=False,
+        default_enabled=True,
     ),
 ]
 

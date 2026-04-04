@@ -29,13 +29,20 @@ class UpdateAarNoteRequest(BaseModel):
 
 
 class SavedConfig(BaseModel):
-    """Persisted user config (data/user_config.json)."""
+    """Persisted user config (data/{game}_config.json)."""
     game: str = "eu5"
     game_install_path: str = ""
     save_directory: str = ""
     snapshot_freq: str = "yearly"
     language: str = "english"
     enabled_field_keys: list[str] = []
+    selected_playthrough_id: str = ""
+
+
+class LoadPlaythroughRequest(BaseModel):
+    """POST /api/load-playthrough — open a DB and set active playthrough for browsing."""
+    game: str = "eu5"
+    playthrough_id: str
 
 
 # ---------------------------------------------------------------------------
