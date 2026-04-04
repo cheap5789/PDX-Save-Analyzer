@@ -30,6 +30,11 @@
   - [Identity & Metadata](#identity--metadata)
   - [Economy — currency_data (resource pools)](#economy--currency_data-resource-pools)
   - [Economy — Income & Expenses](#economy--income--expenses)
+  - [Technologies — Advances & Counters](#technologies--advances--counters)
+  - [Military](#military)
+  - [Score](#score)
+  - [Government](#government)
+  - [Religion & Diplomacy](#religion--diplomacy)
 - [Open Questions](#open-questions)
 
 ---
@@ -333,8 +338,10 @@ Named situations, each with status + dates:
 
 > Systematic review of every field we extract, verified against game UI.
 > For each field: raw JSON path, raw value, what we store in DB, what we display in frontend, and any transformation needed.
-> Reference save: Greenland playthrough, autosave at 1345.10.1, game version 1.1.10.
+> Reference save: Greenland playthrough (`saves/autosave.eu5`), autosave at **1345.10.1**, game version 1.1.10.
+> Player: Greenland (tag `GRL`, country ID `13`). Multiplayer game.
 > Reference country: France (tag `FRA`, country ID `1135`) — a great power with all field types populated.
+> Country ID lookup method: `countries.tags` is a top-level dict `{numeric_id_string: "TAG"}`. FRA found at ID `"1135"`. Confirmed via `countries.database["1135"].country_name == "FRA"`.
 
 ### Identity & Metadata
 
@@ -498,6 +505,93 @@ Per-estate tax rate settings. Player-controlled.
 
 **No cumulative income/expense totals found anywhere in the save.** The game only stores current-month values and a 12-month rolling history. Cumulative P&L would need to be reconstructed by summing snapshots over time — this is a natural fit for our snapshot-based approach.
 
+### Technologies — Advances & Counters
+
+#### Advances (`researched_advances` + `counters.Advances`)
+
+`researched_advances` is a dict of `{advance_key: true}` — all values are always `true` since advances cannot be un-researched. It is effectively a **set** of researched advance string keys.
+
+`counters.Advances` = total advances researched **including the one currently being researched** (i.e. always `len(researched_advances) + 1` while a research is in progress). This is the number displayed in the game UI.
+
+| # | Field | JSON Path | Raw (FRA, 1345) | Game UI | Store | Status | Notes |
+|---|-------|-----------|-----------------|---------|-------|--------|-------|
+| 70 | Advance count | `counters.Advances` | `71` | 70 (researched) + 1 (in progress) | **YES** | **NOT TRACKED** | The authoritative advance count. Includes the currently-researching advance. Store this integer — it tells you tech level at a glance. |
+| 71 | Researched advance set | `researched_advances` | 70 keys (dict) | — | **YES (set of keys)** | **NOT TRACKED** | Store the full set of advance keys per snapshot. Enables detecting newly researched advances between snapshots (diff between consecutive snapshots). Cross-referencing with game files for effects is a later-stage task. |
+
+**Sample advance keys at 1345 (FRA)** — mix of categories visible in the key names:
+
+| Category | Example keys |
+|----------|-------------|
+| Core/general | `scholasticism`, `mapmaking`, `guilds`, `feudalism_advance`, `road_building` |
+| Military | `castle_advance`, `fort_limit_1_advance`, `faster_levy_recruitment` |
+| Unit unlocks | `unlock_footmen_advance`, `unlock_archers_advance`, `unlock_cog_advance` |
+| Economy | `banking_advance` *(not yet at 1345)*, `taxation_advance`, `mining_advance` |
+| Culture/law | `salic_law_advance`, `cultural_traditions_law_advance`, `partition_inheritance_advance` |
+| National (French) | `french_heritage`, `french_tradition` |
+
+Note: `researched_advances` contains all advance types in one flat dict — core advances, unit unlocks, laws, national traditions, etc. The game UI's tech count matches `counters.Advances - 1` (excluding the in-progress one).
+
+#### Country Counters (`counters`)
+
+All are cumulative lifetime integers. Never decrease (except `LivingCharacters`).
+
+| # | Counter key | FRA (1345) | GRL (1345) | Meaning | Track? |
+|---|-------------|------------|------------|---------|--------|
+| 72 | `Advances` | 71 | 68 | Advances researched incl. in-progress | **YES** — see above |
+| 73 | `BorderLocations` | 34 | 3 | Locations on country's border | **YES** |
+| 74 | `BuildingLevelChanged` | 25 | 2 | Cumulative building level changes | **YES** |
+| 75 | `CabinetCardModifier` | 22 | 12 | Cabinet card interactions | **YES** |
+| 76 | `CoastalLocations` | 17 | 3 | Coastal locations owned | **YES** |
+| 77 | `ConstructionStarted` | 48 | 2 | Constructions ever started | **YES** |
+| 78 | `Diplomacy` | 382 | 7 | Diplomatic actions taken | **YES** |
+| 79 | `DiscoveredLocations` | 3 | 3 | Locations explored/discovered | **YES** |
+| 80 | `Locations` | 195 | 13 | Total locations owned | **YES** |
+| 81 | `RGO` | 70 | — | RGO level count | **YES** |
+| 82 | `Reforms` | 2 | 2 | Government reforms enacted | **YES** |
+| 83 | `Siege` | 5 | — | Total sieges | **YES** |
+| 84 | `Wars` | 74 | — | Wars participated in | **YES** |
+| 85 | `WorksOfArt` | 3 | — | Works of art created | **YES** — not present in GRL at 1345 (likely 0/absent) |
+| — | `Anything` | 1,348 | 243 | Total events fired — meaning unclear | **NO** — document as investigation topic |
+| — | `LivingCharacters` | 228 | 23 | Living characters associated | **NO** — not a useful country-level stat |
+| — | `Pops` | 111 | 109 | Count of pop *objects* (not population size) | **NO** — misleading: actual population = sum of `size` across all pops in country's locations |
+| — | `PrimaryCulture` | 2 | 2 | Every country has 2 here — meaning unclear | **NO** — skip |
+| — | `Rebels` | 26 | 4 | Rebel movements ever created | **NO** |
+| — | `SubjectTree` | 48 | 2 | Unknown — skip | **NO** |
+| — | `TradePath` | 3 | 3 | Trade paths | **NO** |
+
+> **Note on `Pops` counter**: The `population.database` has 115,951 pop objects globally, each carrying a `size` field (e.g. pop #0 has size 0.224). Locations list their pops; locations are assigned to owner countries. True population = sum of `size` across all pops in all locations owned by the country. The `counters.Pops` integer is a count of pop *objects* (not their total size) and is not a useful population figure.
+
+> **Note on `Anything` counter**: Suspected to be a total fired-event count. Varies widely (FRA 1348 vs GRL 243 — GRL is a minor power with little history). To investigate: check `event_manager` structure and whether event records have a per-country count matching this value.
+
+#### Current Research (`current_research`)
+
+France is researching 4 advances simultaneously in its queue:
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| `current_research.research` | `[1071, 591, 552, 551]` | Research queue — **last item is actively being researched**, rest are waiting |
+| `current_research.progress` | `6.04` | Progress toward completing the active advance. Threshold unknown — needs game data. |
+| Active advance | `improve_relation_impact_renaissance` (ID 551) | Resolved via `advance_manager.database[551].t` |
+| Queued (waiting) | `devotio_moderna`, `renaissance_subject_opinions_advance`, `late_feudal_relations` | Will be researched in reverse order once active completes |
+
+**`advance_manager.database`** (top-level in save): Global mapping of integer ID → advance key string (`{id: {t: "advance_key"}}`). 2,629 total advances in the game. Essential lookup table for resolving `current_research` IDs. IDs are stable across saves (same advance always has the same integer ID).
+
+#### Advances & Counters — Backlog
+
+21. **[NEW] Advance count tracking**: Add `counters.Advances` to field catalog. Key: `advances`, category: `technology`, display: "Advances". Store as integer. This is the primary tech level indicator.
+
+22. **[NEW] Researched advance set**: Store `researched_advances` dict keys as a list per snapshot. Enables advance-diff between snapshots (detect newly researched advances). Category: `technology`. At this stage: store only, no per-advance effect lookup.
+
+23. **[NEW] Current research tracking**: Store `current_research.research[-1]` (the active advance key, resolved via `advance_manager`) and `current_research.progress` per snapshot. Also store the full queue (`research[:-1]`) for context. Key: `current_research_advance`, `current_research_progress`.
+
+24. **[NEW] Advance classification**: Parse `common/advances/` game files to classify each advance by research domain (scientific, social, military, economic, etc.). One-shot task at startup (or once per game version). Result stored as a lookup table used to enrich `researched_advances` display. **Not a priority now** — document as future enhancement.
+
+25. **[NEW] Country counters**: Add the following counters to the field catalog (all from `counters.*`): `BorderLocations`, `BuildingLevelChanged`, `CabinetCardModifier`, `CoastalLocations`, `ConstructionStarted`, `Diplomacy`, `DiscoveredLocations`, `Locations`, `RGO`, `Reforms`, `Siege`, `Wars`, `WorksOfArt`. Category: `counters`. These are cumulative lifetime stats — interesting for historical trend analysis and event detection (e.g. spike in Wars counter = war started).
+
+26. **[INVESTIGATE] `Anything` counter**: Suspected total fired-event count. Needs cross-referencing with `event_manager` database to confirm. Document as future investigation.
+
+---
+
 #### Economy Income & Expenses — Backlog
 
 14. **[NEW] Navy maintenance**: Add `last_months_navy_maintenance` to field catalog. Key: `navy_maintenance`, category: `economy`.
@@ -514,16 +608,396 @@ Per-estate tax rate settings. Player-controlled.
 
 20. **[FEATURE] Fixed vs variable cost analysis**: Maintenance sliders (0.0–1.0) represent the player's spending decisions. Costs that scale with slider position are "variable" (army, navy, fort, food). Costs independent of sliders are "fixed" (interest, possibly subsidies). This analysis can be done in frontend by correlating slider values with expense line items across snapshots.
 
+### Military
+
+#### Force Sizes
+
+| # | Field | JSON Path | Raw (FRA) | Scale / Notes | Keep? | Status |
+|---|-------|-----------|-----------|---------------|-------|--------|
+| 86 | Army size | `expected_army_size` | `23.21` | Indicative. No direct gameplay effect currently. FRA=23.2, ENG=10.7, CAS=21.4, GRL≈0 | **YES** | **NOT TRACKED** |
+| 87 | Navy size | `expected_navy_size` | `40` | Indicative. No direct gameplay effect currently. FRA=40, ENG=55, CAS=36, GRL=0 | **YES** | **NOT TRACKED** |
+| 88 | Max manpower | `max_manpower` | `0.9108` | ×1000 → 910.8 (already backlogged #8) | **YES** | **NEEDS FIX** |
+| 89 | Max sailors | `max_sailors` | `0.1242` | ×1000 → 124.2 (already backlogged #9) | **YES** | **NEEDS FIX** |
+| 90 | Manpower/month | `monthly_manpower` | `0.00412` | ×1000 → 4.12/month regeneration rate | **YES** | **NOT TRACKED** |
+| 91 | Sailors/month | `monthly_sailors` | `0.00138` | ×1000 → 1.38/month regeneration rate | **YES** | **NOT TRACKED** |
+| 92 | Manpower losses | `this_months_manpower_losses` | `-0.13108` | ×1000 → -131.1 this month (combat + attrition) | **YES** | **NOT TRACKED** |
+| 93 | Naval range | `naval_range` | `1000` | Same for all countries at 1345 — evolves differently per country as tech advances | **YES** | **NOT TRACKED** |
+| 94 | Colonial range | `colonial_range` | `1000` | Same situation as naval range | **YES** | **NOT TRACKED** |
+
+#### Subunits (`owned_subunits` → `subunit_manager.database`)
+
+FRA has 145 subunits at 1345. These are individual regiments (army) and ships (navy), each stored as an object in `subunit_manager.database`.
+
+**Key fields per subunit:**
+
+| Field | Sample | Notes |
+|-------|--------|-------|
+| `type` | `a_feudal_levy`, `a_mailed_knights`, `a_footmen`, `n_cog` | Unit type key. Prefix `a_` = army unit, `n_` = naval unit. Resolves to game data via `common/unit_types/`. |
+| `strength` | `0.5` | Current strength as fraction of max (0–1). Max strength varies by unit type and age — requires `common/unit_types/` to convert to actual troop count. |
+| `morale` | `3.63` | Current morale (absolute value, scale defined per unit type in game data). |
+| `experience` | `1.57` | Combat experience accumulated. |
+| `home` | `2179` (location ID) | Recruitment home location. |
+| `culture` / `religion` | int IDs | Culture and religion of the regiment. |
+| `unit` | int ID | ID of the army group (in `unit_manager.database`) this subunit belongs to. |
+| `attrition_losses_per_month` | `[-1,-1,...,0.025,...]` | 12-element array (one per month). -1 = no attrition that month. Active values = fraction lost. |
+| `missing` | `{demand: "...", weaponry: 0, ...}` | Supply demands not met. Indicates maintenance type required and resource shortfalls. |
+
+**FRA composition at 1345:**
+
+| Type | Count | Notes |
+|------|-------|-------|
+| `a_feudal_levy` | 109 | Standard medieval infantry |
+| `a_mailed_knights` | 27 | Heavy cavalry |
+| `a_footmen_levy` | 7 | Footmen |
+| `a_footmen` | 1 | Professional footmen |
+| `n_cog` | 1 | Cog (merchant ship used as warship) |
+
+**Deployed manpower estimation**: Cannot be done with a simple heuristic. `strength` (0–1) × unit max strength (from `common/unit_types/`) = actual troop count per regiment. Each unit type has its own max strength defined in `game/in_game/common/unit_types/` (e.g. `a_age_2_renaissance_infantry` has max strength 1.000). **Cross-referencing game unit type files is required for accurate headcount.** This is a future enhancement.
+
+#### Army Groups (`units` → `unit_manager.database`)
+
+FRA has 9 army groups. Each group object contains: name, `is_army` flag, formation preference, food supply state, `frontage` (max regiment width), `leader` (character ID), current `location` (location ID), and battle result history.
+
+These are not snapshot-level fields — army group composition changes constantly during play. **Not tracked per snapshot.** Army count (= `len(units)`) could be derived but has limited analytical value.
+
+#### Military — Backlog
+
+27. **[NEW] Force sizes**: Add `expected_army_size` and `expected_navy_size` to field catalog. Indicative-only values currently, but useful for tracking military buildup trends. Category: `military`.
+
+28. **[NEW] Monthly manpower/sailors**: Add `monthly_manpower` and `monthly_sailors` to field catalog (×1000 transform). Add `this_months_manpower_losses` (×1000 transform, negative value = losses). Category: `military`.
+
+29. **[NEW] Naval and colonial range**: Add `naval_range` and `colonial_range` to field catalog. Category: `military`. Values are the same for all countries at game start but diverge over time as countries research different advances — tracking over time shows which countries are investing in overseas projection.
+
+30. **[FUTURE] Subunit deployed manpower**: Accurate troop count requires `strength` × unit-type-specific max strength from `common/unit_types/`. Implementation: parse unit type files at startup to build a `{unit_type_key: max_strength}` lookup. Then for each subunit: `actual_troops = subunit.strength × lookup[subunit.type]`. Sum across all subunits for total army size. This would replace the approximate `expected_army_size`.
+
+31. **[FUTURE] Army composition breakdown**: Once unit types are parsed, group subunits by type category (infantry/cavalry/artillery/naval) per snapshot. Enables tracking how a country's military composition evolves (e.g. transition from feudal levies to professional armies).
+
+### Score
+
+#### Age System
+
+Age transitions are **universal** — same date for every country simultaneously:
+
+| Age # | Name | Start date | Notes |
+|-------|------|-----------|-------|
+| 1 | Age of Traditions | Game start | |
+| 2 | Renaissance | 1342 | |
+| 3 | Age of Discovery | 1437 | |
+| 4 | Age of Reformation | 1537 | |
+| 5 | Age of Absolutism | 1637 | Pattern: 1x37 from age 3 onward |
+| 6 | Age of Revolutions | 1737 | |
+
+Score is **cumulative within an age and resets to 0 at each age transition**. Only countries ranked **top 10** in a category (ADM, DIP, MIL) earn score each month, scaled by rank. `age_score` is a 6-element array — non-zero only for completed or current ages. Absent entirely for countries that have never earned score.
+
+#### Score Fields
+
+| # | Field | JSON Path | FRA (1345) | GRL (1345) | ENG (1345) | Keep? | Status | Notes |
+|---|-------|-----------|------------|------------|------------|-------|--------|-------|
+| 95 | Overall rank | `score.score_place` | 4 | 67 | 9 | **YES** | **NOT TRACKED** | Leaderboard position across all countries. |
+| 96 | ADM score | `score.score_rating.ADM` | 8.93 | 2.61 | 3.41 | **YES** | **NOT TRACKED** | Cumulative admin score for the current age. |
+| 97 | DIP score | `score.score_rating.DIP` | 4.74 | 0.02 | 0.38 | **YES** | **NOT TRACKED** | |
+| 98 | MIL score | `score.score_rating.MIL` | 4.97 | 0.32 | 0.83 | **YES** | **NOT TRACKED** | |
+| 99 | ADM rank | `score.score_rank.ADM` | 6 | 828 | 68 | **YES** | **NOT TRACKED** | Rank among all countries. Only top 10 earn score per month. |
+| 100 | DIP rank | `score.score_rank.DIP` | 5 | 334 | 30 | **YES** | **NOT TRACKED** | |
+| 101 | MIL rank | `score.score_rank.MIL` | 3 | 867 | 16 | **YES** | **NOT TRACKED** | |
+| 102 | Age scores | `score.age_score` | `[57.9, 48.6, 0, 0, 0, 0]` | absent | `[48.9, 18.5, 0, 0, 0, 0]` | **YES** | **NOT TRACKED** | 6-element array. Absent for countries with no score history — default to `[0,0,0,0,0,0]`. Resets at each age transition. |
+
+#### Score — Backlog
+
+35. **[NEW] Score tracking**: Add `score.score_place`, `score.score_rating.ADM/DIP/MIL`, `score.score_rank.ADM/DIP/MIL`, and `score.age_score` to field catalog. Category: `score`. Note: `age_score` may be absent — default to zeros. Age resets at universal dates (1342, 1437, 1537, 1637, 1737) must be accounted for in trend visualizations.
+
 ---
 
-## Open Questions
+### Government
+
+#### Country Rank & Level
+
+Country rank progresses as a country grows: **county (1) → duchy (2) → kingdom (3) → empire (4)**. Stored as integer `level` on the country object. Absent = 1 (county). `country_rank_history` records progression as a list of rank milestone strings — useful for event detection.
+
+| # | Field | JSON Path | FRA | GRL | Keep? | Status | Notes |
+|---|-------|-----------|-----|-----|-------|--------|-------|
+| 103 | Country level | `level` | `3` (kingdom) | absent (=1, county) | **YES** | **NOT TRACKED** | Integer 1–4. Absent = county = 1. Rank-up = governance event. |
+| 104 | Rank history | `country_rank_history` | `[rank_county, rank_kingdom]` | — | **YES** | **NOT TRACKED** | List of rank milestone strings. Diff between snapshots → rank-up event ("France became a Kingdom"). |
+| 105 | Government type | `government.type` | `monarchy` | — | **YES** | **NOT TRACKED** | Localise. Merges identity backlog #4 and earlier #33. Changes are governance events. |
+| 106 | Succession law | `government.heir_selection` | `salic_law` | — | **YES** | **NOT TRACKED** | Localise → "Salic Law". Changes are governance events. |
+| 107 | Parliament type | `government.parliament.parliament_type` | `estate_parliament` | — | **YES** | **NOT TRACKED** | Infrequent but significant — transitions surface as governance milestone events. |
+
+#### Ruler & Heir
+
+Ruler/heir stats are on a **0–100 scale**. Ruler stats are integers. Heir stats are multiples of 0.25, accumulating gradually during childhood: 25% chance per month of +0.5 in one trait, weighted by education type. Both resolved from `character_db.database` via `government.ruler` and `government.heir` character IDs.
+
+| # | Field | JSON Path | FRA ruler (John, ID=690) | FRA heir (Louis, ID=24617) | Keep? | Status | Notes |
+|---|-------|-----------|--------------------------|---------------------------|-------|--------|-------|
+| 108 | Ruler ADM | `character_db[government.ruler].adm` | 60 | 25 | **YES** | **NOT TRACKED** | 0–100 integer for rulers; 0.25 multiples for heirs. |
+| 109 | Ruler DIP | `character_db[government.ruler].dip` | 62 | 12.5 | **YES** | **NOT TRACKED** | |
+| 110 | Ruler MIL | `character_db[government.ruler].mil` | 57 | 16.25 | **YES** | **NOT TRACKED** | |
+| 111 | Ruler name | `character_db[government.ruler].first_name` | `name_john` | `name_louis` | **YES** | **NOT TRACKED** | Localisation key → "John", "Louis". |
+| 112 | Ruler birth | `character_db[government.ruler].birth_date` | `1319.4.26` | `1339.4.1` | **YES** | **NOT TRACKED** | Derive age at snapshot. Heir coming of age = governance event. |
+
+> **Ruler change detection**: Track `government.ruler` ID per snapshot. Change between snapshots → "new ruler" event. Similarly `government.heir` change → "heir changed" event (death, disinheritance, new birth).
+
+#### Societal Values (`government.societal_values`)
+
+Sixteen political/ideological sliders evolving through events, reforms, and decisions. **Track over time** — they form a long-term political portrait of each country. Scale −100 to +100. **−999 = not applicable for this country** (e.g. `sinicized_vs_unsinicized` for European nations — filter before display).
+
+| # | Slider key | FRA (1345) | Meaning | Keep? |
+|---|-----------|------------|---------|-------|
+| 113 | `centralization_vs_decentralization` | 95 | Very centralized | **YES** |
+| 114 | `aristocracy_vs_plutocracy` | -85 | Very aristocratic | **YES** |
+| 115 | `serfdom_vs_free_subjects` | -80 | Heavily serf-based | **YES** |
+| 116 | `offensive_vs_defensive` | -40 | Slightly defensive | **YES** |
+| 117 | `land_vs_naval` | -46 | Land power focus | **YES** |
+| 118 | `quality_vs_quantity` | -30 | Quantity-leaning | **YES** |
+| 119 | `belligerent_vs_conciliatory` | -19 | Slightly belligerent | **YES** |
+| 120 | `traditionalist_vs_innovative` | -30 | Traditional | **YES** |
+| 121 | `spiritualist_vs_humanist` | -50 | Spiritualist | **YES** |
+| 122 | `capital_economy_vs_traditional_economy` | 75 | Capital economy | **YES** |
+| 123 | `individualism_vs_communalism` | -13 | Slightly communal | **YES** |
+| 124 | `mercantilism_vs_free_trade` | -999 | N/A for France | **YES** (store -999, filter on display) |
+| 125 | `outward_vs_inward` | -999 | N/A | **YES** |
+| 126 | `sinicized_vs_unsinicized` | -999 | N/A (East Asian mechanic) | **YES** |
+| 127 | `absolutism_vs_liberalism` | -999 | N/A | **YES** |
+| 128 | `mysticism_vs_jurisprudence` | -999 | N/A | **YES** |
+
+> **Visualization**: Radar/spider chart per snapshot (filtering -999 values) shows country's political profile at a point in time. Trend lines per active slider over time show how the country evolves ideologically. Challenge: variable number of applicable sliders per country.
+
+#### Cabinet (skipped)
+
+Cabinet entries (`government.cabinet_entries` → `cabinet_manager.database`) hold active government actions with targets and responsible characters. Too granular for snapshot tracking. Expansion is detected via location ownership changes (tracked separately).
+
+#### Government — Backlog
+
+36. **[NEW] Country level & rank history**: Add `level` (integer, absent=1) and `country_rank_history` (list of rank key strings) to field catalog. Category: `government`. Detect rank-up between snapshots → surface as event ("France became a Kingdom").
+
+37. **[NEW] Government type & succession law**: Add `government.type` and `government.heir_selection` to field catalog. Category: `government`. Merges identity backlog items #4 and #16. Changes are governance events.
+
+38. **[NEW] Parliament type**: Add `government.parliament.parliament_type` to field catalog. Category: `government`. Changes are significant governance milestone events.
+
+39. **[NEW] Ruler & heir tracking**: Add ruler and heir ADM/DIP/MIL, name key, and birth date to field catalog. Resolve from `character_db` via `government.ruler` and `government.heir`. Category: `government`. Ruler ID change = ruler change event; heir ID change = heir change event.
+
+40. **[NEW] Societal values**: Add all 16 `government.societal_values` fields to field catalog. Category: `government`. Store raw values including -999. Frontend filters -999 per country before display. Visualization: radar chart + per-slider trend lines.
+
+41. **[FUTURE] Implemented laws/reforms/privileges**: Diff `government.implemented_laws`, `implemented_reforms`, and `implemented_privileges` between snapshots to detect "law adopted", "reform enacted", "privilege granted" events. Requires diff logic similar to advance detection.
+
+---
+
+### Religion & Diplomacy
+
+#### Architectural Decision — Religion as a Parallel Entity
+
+Religion is not merely a country attribute: it is a **first-class tracked entity**. Each religion entry in `religion_manager.database` has its own state (reformation meters, tithes, saint power, timed modifiers) and its country members change over time. The UI must expose a dedicated **Religion view** alongside the Country view, with:
+
+- A list of all religions and their current member countries
+- Demographic stats aggregated across member countries (pops, territory)
+- Religion-specific variables (reform desire, tithe rate, saint power…)
+- A timeline of membership changes (countries converting in or out)
+
+This requires **parser refactoring** (a second tracked-entity type beyond countries, with its own snapshot table) and **frontend refactoring** (a parallel navigation rail entry and component set).
+
+The Papacy (`PAP`) is handled as a regular country. The Religion view links to PAP's country page; no special entity type is needed.
+
+---
+
+#### Global Religion Entity (`religion_manager.database[id]`)
+
+Religions are stored globally in `religion_manager.database`, keyed by a numeric ID. 293 religions exist in the sample save. Each entry has a rich structure. Fields worth tracking per religion snapshot:
+
+| # | Field | JSON Path | Catholic (ID=12) sample | Keep? | Status | Notes |
+|---|-------|-----------|------------------------|-------|--------|-------|
+| 129 | Religion definition key | `religion_manager.database[id].definition` | `"catholic"` | **YES** | **NOT TRACKED** | Stable string key — use as display label seed. |
+| 130 | Religion group | `religion_manager.database[id].group` | `"christian"` | **YES** | **NOT TRACKED** | Groups: christian, islamic, buddhist, dharmic, folk, … |
+| 131 | Has religious head | `religion_manager.database[id].has_religious_head` | `true` | **YES** | **NOT TRACKED** | Boolean. True = governed by a head-of-religion country (e.g. PAP for Catholic). |
+| 132 | Important country (head) | `religion_manager.database[id].important_country` | `"PAP"` | **YES** | **NOT TRACKED** | 3-letter tag of the religious head country. Absent if `has_religious_head=false`. |
+| 133 | Reform desire | `religion_manager.database[id].reform_desire` | `0.0366` | **YES** | **NOT TRACKED** | Global meter (0.0–1.0). Rises over time; reaching threshold triggers the Reformation. Track as trend — a spike is a major world event. |
+| 134 | Tithe rate | `religion_manager.database[id].tithe` | `0.02` | **YES** | **NOT TRACKED** | Tax rate paid to religious head. Drives PAP income. |
+| 135 | Saint power | `religion_manager.database[id].saint_power` | `3772` | **YES** | **NOT TRACKED** | Accumulated saint power pool. Religion-specific mechanic. |
+| 136 | Timed modifiers | `religion_manager.database[id].timed_modifier` | list (varies) | **YES** | **NOT TRACKED** | Count and types of active timed modifiers on the religion. |
+
+> **Religion membership**: The country's `primary_religion` (numeric ID) links it to a religion. At each snapshot, derive member lists by scanning all countries' `primary_religion`. Store as a join table `(snapshot_id, religion_id, country_id)`.
+
+> **Religion-specific currency variables** (`has_karma`, `has_purity`, `has_righteousness`) live on the religion definition; the matching values (`karma`, `purity`, `righteousness`) live in the country's `currency_data`. They are already tracked as economy fields (backlog #8-13); display them in the Religion view filtered by which mechanic the religion activates.
+
+---
+
+#### Per-Country Religion Fields
+
+| # | Field | JSON Path | FRA (1345) | GRL (1345) | Keep? | Status | Notes |
+|---|-------|-----------|------------|------------|-------|--------|-------|
+| 137 | Primary religion ID | `countries.database[id].primary_religion` | `12` (catholic) | `12` (catholic) | **YES** | **NOT TRACKED** | Foreign key into `religion_manager.database`. Already identified in Identity section (#12) but not yet stored as a tracked field. |
+| 138 | Religious aspects | `countries.database[id].religious_aspects` | `{}` | `{}` | **LOW** | **NOT TRACKED** | Empty in early game (1345). Likely populated later by events/choices. Skip until populated examples are found. |
+| 139 | Saints | `countries.database[id].saints` | `[675]` | `[]` | **LOW** | **NOT TRACKED** | List of character IDs canonized as saints. Very specific mechanic. Skip for now; revisit if saint events become interesting to surface. |
+| 140 | Current religious focus | `countries.database[id].current_religious_focus` | absent | absent | **LOW** | **NOT TRACKED** | Action slot. Not populated in early game. Skip. |
+
+> **Summary**: Only `primary_religion` is needed at the country level (already captured as field #12). The Religion view derives all membership data from it. No other per-country religion fields are high priority at this stage.
+
+---
+
+#### Diplomacy — Per-Country Summary Fields
+
+All fields from `countries.database[country_id]` directly.
+
+| # | Field | JSON Path | FRA (1345) | Keep? | Status | Notes |
+|---|-------|-----------|------------|-------|--------|-------|
+| 141 | Diplomats | `countries.database[id].diplomats` | `1.24` | **YES** | **NOT TRACKED** | Diplomatic action points — a currency. Range 0 to ~10–12 (cap scales with techs). Spend on diplomatic actions (alliances, claim fabrication, etc.). Track per snapshot alongside gold and manpower. |
+| 142 | Rivals | `countries.database[id].rivals_2` | list | **YES** | **NOT TRACKED** | List of rival country IDs. Summary diplomatic posture. Track count + IDs. |
+| 143 | Enemies | `countries.database[id].enemies` | list | **YES** | **NOT TRACKED** | List of enemy country IDs (declared enemies, distinct from war belligerents). Track count + IDs. |
+| 144 | Last war date | `countries.database[id].last_war` | date string | **YES** | **NOT TRACKED** | Date the country last entered a war. Useful for peace/war cycle analysis. |
+| 145 | Last peace date | `countries.database[id].last_peace` | date string | **YES** | **NOT TRACKED** | Date the country last made peace. Together with `last_war` defines recent belligerence. |
+
+---
+
+#### Wars (`war_manager.database`) — Architecture Decision
+
+Wars are a **first-class tracked entity**, alongside countries and religions. 39 active dict-entries + 27 null slots were observed in the Greenland save at 1345. Concluded wars retain their full record in the save (`end_date` present, `previous=true`) — **keep forever** as permanent historical records.
+
+> **Storage note**: `war_manager.database` contains null `"none"` sentinel entries (27 of 66 IDs in sample) — these are skipped during parsing.
+
+---
+
+#### War Identity & Static Fields
+
+Populated once when a war is first detected; not re-written on subsequent snapshots unless `end_date` appears.
+
+| Field | JSON path | Sample | Notes |
+|-------|-----------|--------|-------|
+| War ID | key in `war_manager.database` | `33554491` | Numeric string. Stable for the war's lifetime. |
+| Name key | `war_name.name` | `NORMAL_WAR_NAME` | Localisation key. Observed: `NORMAL_WAR_NAME`, `CIVIL_WAR_NAME`, `INDEPENDENCE_WAR_NAME`, `AGRESSION_WAR_NAME`, `NANBOKUCHOU_WAR_NAME`. |
+| Name bases | `war_name.bases` | `{First: {name: "..."}, Second: {name: "..."}}` | Two named anchors used to generate the human-readable war name (e.g. "War of the French Succession"). Store as JSON for localisation at display time. |
+| Start date | `start_date` | `"1344.10.5"` | EU5 date string. |
+| End date | `end_date` | `"1344.10.19"` (concluded) | Absent in ongoing wars. Presence = war over. |
+| Civil war flag | `has_civil_war` | `true` / absent | Boolean. True = internal revolt type war. |
+| Revolt flag | `revolt` | `true` / absent | Distinct from `has_civil_war`; 7 revolt wars observed (overlaps). |
+| Original attacker | `original_attacker` | `1135` (FRA) | Country ID of the war initiator. |
+| Original target | `original_attacker_target` | `1411` | Country ID of the primary defender. |
+| Original defenders | `original_defenders` | `[1411]` | List of country IDs on defender side at war start (usually same as target). |
+| Goal type | one of the goal keys | `"independence"` | Mutually exclusive key: `take_province`, `superiority`, `independence`, `dependency`, `destroy_army`, `opinion_improvement`, `revolt`, `scripted_oneway`, `potential_for_diplomacy`. |
+| Casus belli | `<goal_key>.casus_belli` | `"cb_independence_war"` | String key. Observed: `cb_conquer_enemy`, `cb_independence_war`, `cb_deus_vult`, `cb_humiliate`, `cb_force_migration`, `cb_nanbokuchou`, `cb_parliament_conquer_province`, `cb_none`, etc. |
+| Goal target | `<goal_key>.target` | `{target_province: 3697, target_locations: 15644}` | Varies by goal type. Province/country/subject type. Store as JSON blob. For `dependency`: `{first, second, subject_type}`. |
+
+---
+
+#### War Snapshot Fields
+
+Per-snapshot state — stored at each save snapshot alongside country and religion snapshots.
+
+| Field | JSON path | Sample | Notes |
+|-------|-----------|--------|-------|
+| Attacker score | `attacker_score` | `17` | Cumulative attacker war score pool. Not ±100 — grows independently from defender score. |
+| Defender score | `defender_score` | `8` | Cumulative defender war score pool. |
+| Net war score | derived | `9` | `attacker_score − defender_score`. Positive = attackers winning. Display metric. |
+| War direction (quarter) | `war_direction_quarter` | `-85` | Score momentum over last quarter. Negative = defenders gaining ground. Key trend indicator. |
+| War direction (year) | `war_direction_year` | `-14` | Score momentum over last year. Smoothed version of quarter delta. |
+| War goal held | `war_goal_held` | `1309` (location ID) | Location currently held by the side that controls the war goal. Present only in applicable goal types. |
+| Occupied locations | `locations` | `{loc_id: country_id, …}` | Full occupation map: which country controls each location in the war theatre. Up to 1,395 entries in large wars. **Store as JSON blob** per snapshot — too many rows for a normalized table. |
+
+> **Occupation map rationale**: The locations dict changes each snapshot as territory is taken or recaptured. Storing it as a JSON blob preserves the full picture cheaply. At display time, cross-reference with location→country metadata to compute "% of country X's territory occupied" or "total locations held by each side".
+
+---
+
+#### War Participants
+
+Each participant is an entry in `war.all[n]`. A single country can appear only once per war. Participant status can change (Active → Left). Store as a **participant table** updated when status changes.
+
+| Field | JSON path | Sample | Notes |
+|-------|-----------|--------|-------|
+| Country ID | `all[n].country` | `1135` | Foreign key to countries. |
+| Side | `all[n].history.request.side` | `"Attacker"` / `"Defender"` | Fixed at join time. |
+| Join reason | `all[n].history.request.reason` | `"InternationalOrganization"` | How they entered: `Instigator` (started it), `Target` (primary victim), `Subject` (dragged in as subject/vassal — 463 occurrences, by far most common), `Overlord`, `InternationalOrganization` (called by ally via IO like Papacy), `Scripted`. |
+| Join type | `all[n].history.request.join_type` | `"Always"` | `Always` (obligated), `AutoCall` (auto-joined), `CanCall` (callable but not yet). |
+| Called by | `all[n].history.request.called_ally` | `212` (country ID) | Present when reason = `InternationalOrganization` or ally-call. The country that pulled this one in. |
+| Join date | `all[n].history.joined.date` | `"1344.10.5"` | EU5 date string. |
+| Contribution scores | `all[n].history.joined.score` | `{Combat: 328.93, Siege: 0.36, JoiningWar: 1}` | Cumulative war score contributions by type. `JoiningWar` = 1 always (joining bonus); `Combat` and `Siege` grow with participation. |
+| Losses | `all[n].history.joined.losses.losses` | `{army_infantry: {Battle: 2672, Attrition: 3626}, army_cavalry: {Battle: 1124, …}}` | Full breakdown: unit type × loss cause. Unit types: `army_infantry`, `army_cavalry`, `army_auxiliary`, `navy_galley`, `navy_transport`. Loss causes: `Battle`, `Attrition`, `Capture`. Store as JSON blob. |
+| Status | `all[n].status` | `"Active"` | `Active`, `Left`, `Declined`. Left = exited via separate peace or capitulation. |
+| IO link | `all[n].history.request.international_organization` | `16777280` (IO ID) | Present when `reason=InternationalOrganization`. The IO that obligated participation (e.g. Papacy for Catholic countries). |
+
+> **Declined participants** (4 observed) represent countries that were called but refused to join — worth recording as "declined to join war X" event since it reveals diplomatic tension.
+
+---
+
+#### War Name Types & Goal Type Distribution
+
+Observed in 39 active wars (Greenland save, 1345):
+
+| War name key | Count | Typical scenario |
+|---|---|---|
+| `NORMAL_WAR_NAME` | 27 | Standard wars |
+| `CIVIL_WAR_NAME` | 5 | Internal revolt |
+| `AGRESSION_WAR_NAME` | 3 | Aggressive expansion |
+| `INDEPENDENCE_WAR_NAME` | 2 | Subject breaking free |
+| `NANBOKUCHOU_WAR_NAME` | 2 | Japan-specific succession war |
+
+| Goal type | Count | Meaning |
+|---|---|---|
+| `superiority` | 19 | Generic dominance war (humiliate / conquer) |
+| `revolt` | 7 | Internal revolt |
+| `independence` | 8 | Subject seeking independence |
+| `potential_for_diplomacy` | 7 | Diplomatic pressure war |
+| `dependency` | 6 | Force a subject relationship |
+| `take_province` | 5 | Claim a specific province |
+| `destroy_army` | 2 | Destroy target's army |
+| `opinion_improvement` | 2 | Force improved opinion |
+| `scripted_oneway` | 1 | Scripted/event war |
+
+---
+
+#### Battle Sub-Events (Opportunistic)
+
+`war_manager.database[id].battle` holds **only the most recent battle** in the war — there is no battle history array. Fields: `location` (ID), `date`, `is_land` (boolean), `war_attacker_win` (boolean), `war_score` (score change from this battle), per-side `losses` (8-slot array), `total`, `who` (country, size, tradition, experience), `character` (commanding character ID).
+
+**Tracking decision**: Since only the last battle is stored, full battle history cannot be reconstructed. However, if `battle.date` differs between two consecutive snapshots, a new battle occurred. Record it as a war sub-event: location, date, winner side, war_score delta, both commanding characters, and aggregated losses. This is opportunistic — battles happening between two snapshot moments will be missed, but battles caught will enrich the war record significantly.
+
+---
+
+#### Skipped — Bilateral Relations & Named Diplomatic Actions
+
+Per-country bilateral `relations` sub-dicts (Opinion, Trust, Antagonism biases per pair) are **skipped** — too granular and voluminous at this maturity level. Named diplomatic actions in `diplomacy_manager` (alliances, dependencies, royal marriages, etc.) are also **skipped** for now. Both may be revisited at a high maturity level.
+
+---
+
+#### Religion, Diplomacy & Wars — Backlog
+
+42. **[NEW] Religion entity table**: Create a `religions` tracked-entity type in the parser. Each snapshot records one row per religion in `religion_manager.database` containing: `definition`, `group`, `has_religious_head`, `important_country`, `reform_desire`, `tithe`, `saint_power`, `timed_modifier_count`. Category: `religion`.
+
+43. **[NEW] Religion membership join table**: Each snapshot records `(snapshot_id, religion_id, country_id)` for every country's `primary_religion`. Replaces storing religion as a plain country field. Category: `religion`.
+
+44. **[NEW] Parser refactor — religion as parallel tracked entity**: Extend the parser's snapshot loop to populate religion snapshot rows alongside country snapshot rows. Requires a second entity loop over `religion_manager.database`. Category: `architecture` / `parser`.
+
+45. **[NEW] Frontend — Religion view**: Add a Religion navigation entry parallel to Countries. Religion list page: table of all religions with member count, reform desire, tithe, has_religious_head. Religion detail page: member country list, demographic aggregates, religion-specific variable trends (reform desire over time, saint power over time). Category: `frontend`.
+
+46. **[NEW] Diplomats field**: Add `diplomats` (float, 0–~12) to the country snapshot field catalog. Category: `economy` (treat as a currency alongside gold/manpower/sailors). Store per snapshot.
+
+47. **[NEW] Rivals & enemies tracking**: Add `rivals_2` (list of country IDs) and `enemies` (list of country IDs) to the country snapshot field catalog. Store count + serialized ID list. Category: `diplomacy`.
+
+48. **[NEW] Last war / last peace dates**: Add `last_war` and `last_peace` date strings to the country snapshot field catalog. Category: `diplomacy`.
+
+49. **[NEW] War entity table (static)**: Create a `wars` table populated once per war. Fields: war_id, name_key, name_bases (JSON), start_date, end_date (nullable), is_civil_war, is_revolt, original_attacker_id, original_attacker_target_id, original_defenders (JSON list), goal_type, casus_belli, goal_target (JSON). Category: `wars` / `architecture`.
+
+50. **[NEW] War snapshot table**: Per snapshot, store: war_id, snapshot_id, attacker_score, defender_score, net_war_score (derived), war_direction_quarter, war_direction_year, war_goal_held (location ID, nullable), occupied_locations (JSON blob `{location_id: country_id}`). Category: `wars`.
+
+51. **[NEW] War participant table**: Per (war_id, country_id): side, join_reason, join_type, called_by (country_id, nullable), join_date, io_id (nullable), status (Active/Left/Declined), score_combat, score_siege, score_joining, losses (JSON blob `{unit_type: {cause: count}}`). Update status field when participant exits. Category: `wars`.
+
+52. **[NEW] Parser refactor — wars as parallel tracked entity**: Extend the snapshot loop to process `war_manager.database`. On each snapshot: (a) detect new wars → insert into `wars` table + insert all participants; (b) update `end_date` for newly concluded wars; (c) detect status changes in participants (Active → Left); (d) insert war snapshot row with scores and occupation map. Skip null `"none"` entries. Category: `architecture` / `parser`.
+
+53. **[NEW] War events**: Derive events from war processing: "war started" (new war_id), "war ended" (end_date appeared), "country joined war" (new Active participant), "country left war" (status → Left), "country declined" (status = Declined). Emit with war_id, country_id, side, date context. Category: `events`.
+
+54. **[NEW] Battle sub-events**: When processing a war snapshot, if `battle.date` differs from the previously stored value, record a battle event: war_id, location_id, date, is_land, winner_side, war_score_delta, attacker_country_id, attacker_character_id, defender_country_id, defender_character_id, attacker_losses (JSON), defender_losses (JSON). Category: `events` / `wars`.
+
+55. **[NEW] Frontend — War view**: Add a War navigation entry. War list page: all wars (active first, then concluded) with name, start/end dates, participant count, current net score. War detail page: participants list with side/losses/contribution score, war score trend line over snapshots, occupation map evolution, battle events timeline. Category: `frontend`.
+
+---
 
 - [ ] Resolve `capital` location ID → location name key (needs game setup files — `common/locations/` or map definitions — to map numeric IDs to string keys like `"paris"`)
 - [x] ~~Confirm meaning of `stability` scale~~ → Confirmed: −100 to +100. Three auto-modifiers in `common/auto_modifiers/country.txt`.
-- [ ] Confirm `karma` / `purity` / `righteousness` — which religion mechanics use which? (needs `common/religions/` or `common/defines/`). For now: tracked for all countries, displayed only when relevant to current religion.
+- [ ] Confirm `karma` / `purity` / `righteousness` — which religion mechanics use which? (needs `common/religions/` or `common/defines/`). For now: tracked for all countries; the Religion view filters them by `has_karma` / `has_purity` / `has_righteousness` flags on the religion definition.
 - [ ] Determine which cultures count as "discriminated" — need to cross-reference country pops with culture lists
 - [ ] Manpower/sailors ×1000 and inflation ×100: decide whether to transform at storage or display time
 - [ ] Missing economy line items (food sold/bought, interest, subsidies, court): can any be reconstructed from `loan_manager`, `market_manager`, or province data? Or accept as runtime-calculated?
 - [ ] `balance_history_2.Gold` vs `economy.recent_balance[-1]`: confirmed different (9.65 vs 21.94). Gold delta = actual treasury change (including one-offs), recent_balance = income−expense only. Verify this interpretation with more data points.
 - [ ] `CourtMaintenance` absent for FRA — what is the default value? Check other countries or game defaults.
 - [ ] `historical_tax_base` and `historical_population` — what are the 9 data points? Time intervals? Need to check structure (array of values? array of {date, value}?).
+- [ ] `current_research.progress` threshold — what value means "research complete"? Needs game data (`common/advances/` or `common/defines/`).
+- [ ] Unit type max strength — parse `common/unit_types/` to build `{type_key: max_strength}` lookup for accurate deployed manpower calculation.
+- [ ] Advance classification — parse `common/advances/` to classify each advance by domain (scientific, social, military, economic…). One-shot at startup; enables grouped advance display and research strategy analysis.
+- [ ] Societal values visualization strategy — 16 slider values tracked over time. Best approach: radar chart per snapshot (filtering -999 N/A values) + per-slider trend lines? Decide during frontend design phase.
+- [x] ~~Age transition dates~~ → Confirmed universal: Age of Traditions → Renaissance 1342, then 1437/1537/1637/1737 (pattern 1x37 from age 3). Score resets to 0 at each transition. `score.age_score[n]` holds the cumulative score earned in age n.
