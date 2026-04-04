@@ -1,0 +1,267 @@
+"""
+pipeline.py — Watcher pipeline orchestrator
+
+Implements the state machine from CONFIGURATION.md:
+    Save detected
+      ├─ Parse via rakaly → EU5Save
+      ├─ Check playthrough_id — switch if changed
+      ├─ Event detection (always, every save)
+      └─ Snapshot threshold check → record if due
+
+Ties together: file_watcher, save_loader, snapshot extractor,
+summary/event differ, and SQLite storage.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from pathlib import Path
+from typing import Any, Callable
+
+from backend.config import SessionConfig
+from backend.parser.save_loader import EU5Save, load_save
+from backend.parser.eu5.field_catalog import (
+    FIELD_CATALOG, get_default_fields, get_field, FieldDef,
+)
+from backend.parser.eu5.snapshot import extract_snapshot
+from backend.parser.eu5.summary import extract_summary, GameSummary
+from backend.parser.eu5.events import diff_summaries, GameEvent
+from backend.parser.eu5.game_date import should_snapshot
+from backend.storage.database import Database
+from backend.watcher.file_watcher import SaveFileWatcher
+
+logger = logging.getLogger(__name__)
+
+
+class WatcherPipeline:
+    """
+    Full watcher pipeline: watch dir → parse → diff → store.
+
+    Usage:
+        config = SessionConfig(...)
+        pipeline = WatcherPipeline(config)
+        await pipeline.start()
+        # runs until stopped
+        await pipeline.stop()
+    """
+
+    def __init__(
+        self,
+        config: SessionConfig,
+        on_snapshot: Callable[[dict], Any] | None = None,
+        on_events: Callable[[list[GameEvent]], Any] | None = None,
+        on_playthrough_switch: Callable[[str, str], Any] | None = None,
+    ):
+        """
+        Args:
+            config:                Session configuration.
+            on_snapshot:           Callback when a snapshot is recorded (receives snapshot dict).
+            on_events:             Callback when events are detected (receives event list).
+            on_playthrough_switch: Callback when playthrough switches (old_id, new_id).
+        """
+        self.config = config
+        self._on_snapshot = on_snapshot
+        self._on_events = on_events
+        self._on_playthrough_switch = on_playthrough_switch
+
+        self._db: Database | None = None
+        self._watcher: SaveFileWatcher | None = None
+        self._task: asyncio.Task | None = None
+        self._running = False
+
+        # State
+        self._current_playthrough_id: str = ""
+        self._last_summary: GameSummary | None = None
+        self._enabled_fields: list[FieldDef] = []
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Start the watcher pipeline."""
+        logger.info(f"Starting pipeline for {self.config.game}")
+
+        # Open database
+        self._db = Database(self.config.db_path)
+        await self._db.open()
+
+        # Resolve enabled fields
+        if self.config.enabled_field_keys:
+            self._enabled_fields = [
+                f for f in FIELD_CATALOG
+                if f.key in self.config.enabled_field_keys
+            ]
+        else:
+            self._enabled_fields = get_default_fields()
+
+        # Start file watcher
+        loop = asyncio.get_running_loop()
+        self._watcher = SaveFileWatcher(
+            watch_dir=self.config.save_directory,
+            extensions=self.config.save_extensions(),
+        )
+        self._watcher.start(loop)
+
+        # Start processing loop
+        self._running = True
+        self._task = asyncio.create_task(self._run_loop())
+        logger.info("Pipeline running.")
+
+    async def stop(self) -> None:
+        """Stop the watcher pipeline and clean up."""
+        self._running = False
+        if self._watcher:
+            self._watcher.stop()
+            self._watcher = None
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        if self._db:
+            await self._db.close()
+            self._db = None
+        logger.info("Pipeline stopped.")
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
+    async def _run_loop(self) -> None:
+        """Main processing loop: await saves, process each one."""
+        assert self._watcher is not None
+        assert self._db is not None
+
+        while self._running:
+            try:
+                save_path = await self._watcher.get_next(timeout=1.0)
+                if save_path is None:
+                    continue
+                await self._process_save(save_path)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Error processing save file")
+
+    async def _process_save(self, save_path: Path) -> None:
+        """
+        Process a single detected save file through the full pipeline.
+
+        Steps:
+            1. Parse save via rakaly → EU5Save
+            2. Check playthrough_id — create/switch if needed
+            3. Extract summary and diff for events (always)
+            4. Check snapshot frequency threshold
+            5. If due: extract snapshot and store
+        """
+        assert self._db is not None
+        logger.info(f"Processing: {save_path.name}")
+
+        # Step 1: Parse
+        try:
+            save = load_save(
+                save_path,
+                rakaly_bin=self.config.rakaly_bin,
+                loc_dir=self.config.loc_dir if self.config.loc_dir.exists() else None,
+                verbose=False,
+            )
+        except Exception:
+            logger.exception(f"Failed to parse {save_path.name}")
+            return
+
+        # Step 2: Playthrough management
+        pt_id = save.raw.get("metadata", {}).get("playthrough_id", "")
+        if not pt_id:
+            logger.warning("Save has no playthrough_id — skipping")
+            return
+
+        await self._handle_playthrough(save, pt_id)
+
+        # Step 3: Event detection (always, every save)
+        summary = extract_summary(save)
+        events = diff_summaries(self._last_summary, summary)
+        self._last_summary = summary
+
+        if events:
+            event_dicts = [
+                {"game_date": e.game_date, "event_type": e.event_type, "payload": e.payload}
+                for e in events
+            ]
+            count = await self._db.insert_events(pt_id, event_dicts)
+            logger.info(f"  {count} events recorded")
+            if self._on_events:
+                self._on_events(events)
+
+        # Step 4: Snapshot frequency check
+        last_snap_date = await self._db.get_last_snapshot_date(pt_id)
+        if should_snapshot(save.game_date, last_snap_date, self.config.snapshot_freq):
+            # Step 5: Extract and store snapshot
+            snapshot_data = extract_snapshot(
+                save,
+                enabled_fields=self._enabled_fields,
+            )
+            snap_id = await self._db.insert_snapshot(pt_id, save.game_date, snapshot_data)
+            logger.info(f"  Snapshot #{snap_id} recorded at {save.game_date}")
+            if self._on_snapshot:
+                self._on_snapshot(snapshot_data)
+        else:
+            logger.info(f"  Skipped snapshot (freq={self.config.snapshot_freq}, date={save.game_date})")
+
+    # ------------------------------------------------------------------
+    # Playthrough management
+    # ------------------------------------------------------------------
+
+    async def _handle_playthrough(self, save: EU5Save, pt_id: str) -> None:
+        """Create, resume, or switch playthroughs as needed."""
+        assert self._db is not None
+        meta = save.raw.get("metadata", {})
+
+        if pt_id != self._current_playthrough_id:
+            old_id = self._current_playthrough_id
+
+            if old_id:
+                logger.info(f"  Playthrough switch: {old_id[:8]}... → {pt_id[:8]}...")
+                # Log switch event on the OLD playthrough
+                await self._db.insert_events(old_id, [{
+                    "game_date": save.game_date,
+                    "event_type": "playthrough_switch",
+                    "payload": {"from_id": old_id, "to_id": pt_id},
+                }])
+                if self._on_playthrough_switch:
+                    self._on_playthrough_switch(old_id, pt_id)
+
+            self._current_playthrough_id = pt_id
+            # Reset summary state for new playthrough
+            self._last_summary = None
+
+        # Upsert playthrough record
+        field_keys = [f.key for f in self._enabled_fields]
+        await self._db.upsert_playthrough(
+            playthrough_id=pt_id,
+            game=self.config.game,
+            playthrough_name=meta.get("playthrough_name", ""),
+            country_tag=save.player_country_tag,
+            country_name=meta.get("player_country_name", ""),
+            multiplayer=meta.get("multiplayer", False),
+            snapshot_freq=self.config.snapshot_freq,
+            enabled_fields=field_keys,
+            game_version=meta.get("version", ""),
+            game_date=save.game_date,
+        )
+
+        # Update config with auto-detected values
+        if not self.config.country_tag:
+            self.config.country_tag = save.player_country_tag
+            self.config.country_name = meta.get("player_country_name", "")
+            self.config.playthrough_id = pt_id
+            self.config.multiplayer = meta.get("multiplayer", False)
+            self.config.game_version = meta.get("version", "")

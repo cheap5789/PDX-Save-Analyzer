@@ -76,6 +76,28 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 **Note:** Git operations are performed on the Windows host (GitHub Desktop), not from the development sandbox.
 **Commit format:** `feat(eu5): ...` / `fix(watcher): ...` / `docs: ...` / `toolbox: ...`
 
+### [2026-04-04] Snapshot fields are configurable per campaign (curated catalog + toggle)
+**Decision:** The app ships with a curated catalog of ~44 known EU5 numeric fields (treasury, manpower, stability, scores, etc.) with JSON paths, types, categories, and default on/off. The user toggles fields via checkboxes in the UI. Only enabled fields are recorded in snapshot rows.
+**Rationale:** Balances flexibility (user controls DB size) with simplicity (no manual JSON path entry). The catalog is easily extendable as we discover more fields.
+**Detail:** See `backend/parser/eu5/field_catalog.py` for the full registry.
+
+### [2026-04-04] Event detection uses summary diffing
+**Decision:** On each save parse, a compact summary object is extracted (ruler, wars, alliances, culture, religion, rank, age, situations). Two summaries are diffed to produce typed events. Summaries are ephemeral — only events are stored.
+**Rationale:** The full save JSON is ~136MB. Diffing it entirely is impractical. Summary diffing is fast, deterministic, and the summary definition is extensible. Adding a new detectable event means adding a field to the summary and a diff clause.
+**Detail:** See `backend/parser/eu5/summary.py` and `backend/parser/eu5/events.py`.
+
+### [2026-04-04] Core parser modules promoted from toolbox to backend
+**Decision:** `save_loader.py` and `localisation.py` moved to `backend/parser/`. Toolbox scripts retain thin re-export wrappers so existing CLI usage and notebooks don't break.
+**Rationale:** The parser is a backend concern; keeping it in toolbox would create a circular dependency when the watcher and API import it.
+
+### [2026-04-04] File watcher uses completion-marker debounce
+**Decision:** The watchdog-based file watcher doesn't trigger immediately on file change. It monitors the file size at 0.5s intervals and only emits the path once the size has been stable for 2 seconds. This handles EU5's large saves (~34MB) which take several seconds to write.
+**Rationale:** User chose "completion marker" over simpler debounce. Polling file size stability is OS-agnostic and more reliable than file-lock detection for cross-platform use.
+
+### [2026-04-04] Full stack is async from the start
+**Decision:** The watcher pipeline, database layer, and file watcher all use asyncio + aiosqlite. The pipeline runs as an asyncio task that can be embedded directly into FastAPI in Phase 4.
+**Rationale:** Avoids a sync→async rewrite in Phase 4. aiosqlite is already a dependency.
+
 ### [2026-04-04] Localisation read directly from game install, not shipped with the app
 **Decision:** The app reads localisation `.yml` files at runtime from `<EU5 install>/game/main_menu/localization/<language>/`. No proprietary game files are stored in or shipped with the project.
 **Rationale:** Always in sync with game patches, supports user's language automatically, no proprietary files in the project. A processed cache (`data/eu5_loc_cache.json`) is built on first run and invalidated when the game version changes.
@@ -89,9 +111,9 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 |-------|------|--------|
 | 0 | Git init + project scaffold + docs | ✅ Complete |
 | 1 | Toolbox — save explorer, schema dumper, key finder | ✅ Complete |
-| 2 | Rakaly integration + EU5 parser | ⏳ Next |
-| 3 | File watcher + SQLite storage | ⏳ Pending |
-| 4 | FastAPI backend + WebSocket | ⏳ Pending |
+| 2 | Rakaly integration + EU5 parser | ✅ Complete |
+| 3 | File watcher + SQLite storage | ✅ Complete |
+| 4 | FastAPI backend + WebSocket | ⏳ Next |
 | 5 | React dashboard — stats, charts, event log | ⏳ Pending |
 | 6 | AAR event notes, config persistence | ⏳ Pending |
 | 7 | Second game (TBD) | ⏳ Blocked until Phase 6 done |
