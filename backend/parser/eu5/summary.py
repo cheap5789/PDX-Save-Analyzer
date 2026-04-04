@@ -37,14 +37,20 @@ class CountrySummary:
     # object.  For now ruler_name is only populated for the player country.
     # This is documented as an open question for future toolbox exploration.
 
+    # Localised display names (for frontend display — empty if no loc loaded)
+    country_display: str = ""           # localised country name
+    culture_display: str = ""           # localised culture name
+    religion_display: str = ""          # localised religion name
+
 
 @dataclass
 class WarSummary:
     """Compact state of an active war."""
     war_id: str
     name: str                           # war name if available
-    attackers: list[str]                # country IDs or TAGs involved
-    defenders: list[str]
+    name_display: str = ""              # localised war name (if found)
+    attackers: list[str] = field(default_factory=list)  # country IDs or TAGs involved
+    defenders: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -68,7 +74,8 @@ class GameSummary:
     wars: dict[str, WarSummary]                 # war_id -> summary
     situations: dict[str, SituationStatus]      # situation_key -> status
 
-    # Raw counts for quick comparison
+    # Fields with defaults must come after required fields
+    current_age_display: str = ""               # localised age name
     real_country_count: int = 0
 
 
@@ -88,6 +95,9 @@ def extract_summary(
         tracked_tags:  Which country TAGs to include in the summary.
                        None = all Real countries.
     """
+    from backend.parser.localisation import display_name as _dn
+    has_loc = bool(save.loc)
+
     # --- Countries ---
     countries: dict[str, CountrySummary] = {}
     all_real = save.all_real_countries()
@@ -105,16 +115,21 @@ def extract_summary(
 
         culture_id = cdata.get("primary_culture", -1)
         religion_id = cdata.get("primary_religion", -1)
+        culture_key = save.resolve_culture(culture_id) if isinstance(culture_id, int) else str(culture_id)
+        religion_key = save.resolve_religion(religion_id) if isinstance(religion_id, int) else str(religion_id)
 
         countries[tag] = CountrySummary(
             tag=tag,
             country_id=cid,
             exists=True,
-            primary_culture=save.resolve_culture(culture_id) if isinstance(culture_id, int) else str(culture_id),
-            primary_religion=save.resolve_religion(religion_id) if isinstance(religion_id, int) else str(religion_id),
+            primary_culture=culture_key,
+            primary_religion=religion_key,
             great_power_rank=cdata.get("great_power_rank", 9999),
             capital=cdata.get("capital", -1),
             ruler_name="",  # populated below for player only
+            country_display=_dn(save.loc, tag) if has_loc else tag,
+            culture_display=_dn(save.loc, culture_key) if has_loc else culture_key,
+            religion_display=_dn(save.loc, religion_key) if has_loc else religion_key,
         )
 
     # Player ruler name
@@ -134,6 +149,10 @@ def extract_summary(
         if isinstance(name, dict):
             # Sometimes name is a complex object; fall back to ID
             name = f"war_{wid}"
+        name = str(name)
+
+        # Localise war name: try the raw name as a loc key, otherwise keep it
+        name_display = _dn(save.loc, name) if has_loc else name
 
         attackers: list[str] = []
         defenders: list[str] = []
@@ -153,7 +172,8 @@ def extract_summary(
 
         wars[wid] = WarSummary(
             war_id=wid,
-            name=str(name),
+            name=name,
+            name_display=name_display,
             attackers=attackers,
             defenders=defenders,
         )
@@ -188,6 +208,7 @@ def extract_summary(
     return GameSummary(
         game_date=save.game_date,
         current_age=save.current_age_key,
+        current_age_display=save.current_age_name if has_loc else save.current_age_key,
         player_tag=player_tag,
         player_ruler_name=player_ruler,
         countries=countries,

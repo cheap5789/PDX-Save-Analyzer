@@ -134,6 +134,14 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 **Decision:** On `POST /api/start`, the config (game, paths, frequency, language, enabled fields) is saved to `data/user_config.json`. On page load, `GET /api/config` returns the saved config to pre-fill the Config tab. One file, overwritten each time, one config per game.
 **Rationale:** Minimal friction. User doesn't need to re-enter paths every session. The file is already in `.gitignore`. Per-playthrough config overrides deferred.
 
+### [2026-04-04] Localisation enriches all event payloads and snapshots
+**Decision:** Summary extraction and event diffing now populate display-name fields alongside raw keys. Countries get `country_display`, `culture_display`, `religion_display`. Wars get `name_display`. Ages get `current_age_display`. Event payloads include both `from_religion_key` and `from_religion` (display name). Snapshots include `current_age_display`.
+**Rationale:** The frontend should never need to do its own key→display-name resolution. Display names are computed once at parse time using the localisation dict already loaded into `EU5Save`.
+
+### [2026-04-04] Single-action startup script (start.ps1)
+**Decision:** A PowerShell script (`start.ps1`) activates the venv, checks/installs Python and Node dependencies, starts the FastAPI backend and Vite dev server as background jobs, opens the browser, and streams logs. A companion `start.bat` wraps it for double-click use. `Ctrl+C` tears everything down.
+**Rationale:** Eliminates the multi-terminal juggle of "activate venv → python run_server.py → cd frontend → npm run dev → open browser".
+
 ### [2026-04-04] Localisation read directly from game install, not shipped with the app
 **Decision:** The app reads localisation `.yml` files at runtime from `<EU5 install>/game/main_menu/localization/<language>/`. No proprietary game files are stored in or shipped with the project.
 **Rationale:** Always in sync with game patches, supports user's language automatically, no proprietary files in the project. A processed cache (`data/eu5_loc_cache.json`) is built on first run and invalidated when the game version changes.

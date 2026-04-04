@@ -108,6 +108,8 @@ def _diff_age(
             payload={
                 "from_age": old.current_age,
                 "to_age": new.current_age,
+                "from_age_display": old.current_age_display or old.current_age,
+                "to_age_display": new.current_age_display or new.current_age,
             },
         ))
 
@@ -179,7 +181,7 @@ def _diff_countries(
             events.append(GameEvent(
                 event_type="country_appeared",
                 game_date=date,
-                payload={"tag": tag},
+                payload={"tag": tag, "country": new_c.country_display or tag},
             ))
             continue
 
@@ -188,7 +190,7 @@ def _diff_countries(
             events.append(GameEvent(
                 event_type="country_annexed",
                 game_date=date,
-                payload={"tag": tag},
+                payload={"tag": tag, "country": old_c.country_display or tag},
             ))
             continue
 
@@ -202,6 +204,7 @@ def _diff_countries(
                 game_date=date,
                 payload={
                     "tag": tag,
+                    "country": new_c.country_display or tag,
                     "from_ruler": old_c.ruler_name,
                     "to_ruler": new_c.ruler_name,
                 },
@@ -214,8 +217,11 @@ def _diff_countries(
                 game_date=date,
                 payload={
                     "tag": tag,
-                    "from_culture": old_c.primary_culture,
-                    "to_culture": new_c.primary_culture,
+                    "country": new_c.country_display or tag,
+                    "from_culture": new_c.culture_display if old_c.primary_culture != new_c.primary_culture else old_c.culture_display,
+                    "to_culture": new_c.culture_display or new_c.primary_culture,
+                    "from_culture_key": old_c.primary_culture,
+                    "to_culture_key": new_c.primary_culture,
                 },
             ))
 
@@ -226,8 +232,11 @@ def _diff_countries(
                 game_date=date,
                 payload={
                     "tag": tag,
-                    "from_religion": old_c.primary_religion,
-                    "to_religion": new_c.primary_religion,
+                    "country": new_c.country_display or tag,
+                    "from_religion": old_c.religion_display or old_c.primary_religion,
+                    "to_religion": new_c.religion_display or new_c.primary_religion,
+                    "from_religion_key": old_c.primary_religion,
+                    "to_religion_key": new_c.primary_religion,
                 },
             ))
 
@@ -239,6 +248,7 @@ def _diff_countries(
                 game_date=date,
                 payload={
                     "tag": tag,
+                    "country": new_c.country_display or tag,
                     "from_rank": old_c.great_power_rank,
                     "to_rank": new_c.great_power_rank,
                     "delta": rank_delta,
@@ -252,6 +262,7 @@ def _diff_countries(
                 game_date=date,
                 payload={
                     "tag": tag,
+                    "country": new_c.country_display or tag,
                     "from_capital": old_c.capital,
                     "to_capital": new_c.capital,
                 },
@@ -272,7 +283,8 @@ def _diff_wars(
             game_date=date,
             payload={
                 "war_id": wid,
-                "name": war.name,
+                "name": war.name_display or war.name,
+                "name_key": war.name,
                 "attackers": war.attackers,
                 "defenders": war.defenders,
             },
@@ -286,6 +298,7 @@ def _diff_wars(
             game_date=date,
             payload={
                 "war_id": wid,
-                "name": war.name,
+                "name": war.name_display or war.name,
+                "name_key": war.name,
             },
         ))

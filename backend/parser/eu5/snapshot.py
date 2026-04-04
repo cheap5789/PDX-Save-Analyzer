@@ -79,5 +79,6 @@ def extract_snapshot(
         "game_date": save.game_date,
         "game_version": save.game_version,
         "current_age": save.current_age_key,
+        "current_age_display": save.current_age_name if save.loc else save.current_age_key,
         "countries": countries,
     }
