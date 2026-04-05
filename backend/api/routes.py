@@ -2,14 +2,20 @@
 routes.py — FastAPI REST + WebSocket endpoints
 
 Endpoints:
-    POST /api/start             Launch the watcher pipeline
-    POST /api/stop              Stop the watcher pipeline
-    GET  /api/status            Current watcher/pipeline status
-    GET  /api/playthroughs      List all playthroughs
-    GET  /api/snapshots/{id}    Snapshots for a playthrough
-    GET  /api/events/{id}       Events for a playthrough
-    GET  /api/fields            Available field catalog
-    WS   /ws                    Live push (snapshots + events)
+    POST /api/start                         Launch the watcher pipeline
+    POST /api/stop                          Stop the watcher pipeline
+    GET  /api/status                        Current watcher/pipeline status
+    GET  /api/playthroughs                  List all playthroughs
+    GET  /api/snapshots/{id}                Snapshots for a playthrough
+    GET  /api/events/{id}                   Events for a playthrough
+    GET  /api/fields                        Available field catalog
+    GET  /api/religions/{id}                Religion statics for a playthrough
+    GET  /api/religions/{id}/snapshots      Religion dynamic data over time
+    GET  /api/wars/{id}                     War statics for a playthrough
+    GET  /api/wars/{id}/snapshots           War score data over time
+    GET  /api/wars/{id}/participants        War participants with scores/losses
+    PATCH /api/events/{id}/note             Set AAR note on an event
+    WS   /ws                                Live push (snapshots + events)
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ from backend.api.schemas import (
     StartRequest, StatusResponse, PlaythroughResponse,
     SnapshotResponse, EventResponse, FieldDefResponse, WsMessage,
     UpdateAarNoteRequest, SavedConfig, LoadPlaythroughRequest,
+    ReligionResponse, ReligionSnapshotResponse,
+    WarResponse, WarSnapshotResponse, WarParticipantResponse,
 )
 from backend.config import SessionConfig
 from backend.parser.eu5.field_catalog import FIELD_CATALOG
@@ -325,6 +333,112 @@ async def get_fields(
         )
         for f in fields
     ]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/religions/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/api/religions/{playthrough_id}", response_model=list[ReligionResponse])
+async def get_religions(playthrough_id: str) -> list[ReligionResponse]:
+    """List all religion static records for a playthrough."""
+    db = await _get_db()
+    rows = await db.get_religions(playthrough_id)
+    result = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("color_rgb"), str):
+            d["color_rgb"] = json.loads(d["color_rgb"])
+        result.append(ReligionResponse(**d))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/religions/{playthrough_id}/snapshots
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/religions/{playthrough_id}/snapshots",
+    response_model=list[ReligionSnapshotResponse],
+)
+async def get_religion_snapshots(
+    playthrough_id: str,
+    religion_id: int | None = Query(None, description="Filter by religion ID"),
+) -> list[ReligionSnapshotResponse]:
+    """Religion dynamic data over time."""
+    db = await _get_db()
+    rows = await db.get_religion_snapshots(playthrough_id, religion_id=religion_id)
+    return [ReligionSnapshotResponse(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/wars/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/api/wars/{playthrough_id}", response_model=list[WarResponse])
+async def get_wars(
+    playthrough_id: str,
+    active_only: bool = Query(False, description="Only return active wars"),
+) -> list[WarResponse]:
+    """List all wars for a playthrough."""
+    db = await _get_db()
+    rows = await db.get_wars(playthrough_id, active_only=active_only)
+    result = []
+    for r in rows:
+        d = dict(r)
+        for key in ("original_defenders", "goal_target"):
+            if isinstance(d.get(key), str):
+                try:
+                    d[key] = json.loads(d[key])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        result.append(WarResponse(**d))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/wars/{playthrough_id}/snapshots
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/wars/{playthrough_id}/snapshots",
+    response_model=list[WarSnapshotResponse],
+)
+async def get_war_snapshots(
+    playthrough_id: str,
+    war_id: str | None = Query(None, description="Filter by war ID"),
+) -> list[WarSnapshotResponse]:
+    """War score data over time."""
+    db = await _get_db()
+    rows = await db.get_war_snapshots(playthrough_id, war_id=war_id)
+    return [WarSnapshotResponse(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/wars/{playthrough_id}/participants
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/wars/{playthrough_id}/participants",
+    response_model=list[WarParticipantResponse],
+)
+async def get_war_participants(
+    playthrough_id: str,
+    war_id: str | None = Query(None, description="Filter by war ID"),
+) -> list[WarParticipantResponse]:
+    """War participants with their status and scores."""
+    db = await _get_db()
+    rows = await db.get_war_participants(playthrough_id, war_id=war_id)
+    result = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("losses"), str):
+            try:
+                d["losses"] = json.loads(d["losses"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result.append(WarParticipantResponse(**d))
+    return result
 
 
 # ---------------------------------------------------------------------------

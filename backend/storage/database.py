@@ -60,6 +60,90 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_playthrough
     ON events(playthrough_id, game_date);
+
+-- ── Religion entity tables ──────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS religions (
+    id              INTEGER PRIMARY KEY,    -- religion_manager.database key (numeric)
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    definition      TEXT NOT NULL,          -- string key e.g. "catholic"
+    name            TEXT,                   -- display name (localised)
+    religion_group  TEXT,                   -- e.g. "christian", "buddhist"
+    has_religious_head BOOLEAN DEFAULT 0,
+    color_rgb       TEXT,                   -- JSON [r,g,b]
+    UNIQUE(playthrough_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS religion_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    religion_id     INTEGER NOT NULL,
+    game_date       TEXT NOT NULL,
+    important_country TEXT,                 -- TAG of most important country (nullable)
+    reform_desire   REAL,
+    tithe           REAL,
+    saint_power     REAL,
+    timed_modifier_count INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_religion_snap
+    ON religion_snapshots(playthrough_id, snapshot_id);
+
+-- ── War entity tables ───────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS wars (
+    id              TEXT NOT NULL,           -- war_manager.database key (numeric string)
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    name_key        TEXT,                   -- war name key / template
+    name_display    TEXT,                   -- resolved display name
+    start_date      TEXT,
+    end_date        TEXT,                   -- NULL while active
+    is_civil_war    BOOLEAN DEFAULT 0,
+    is_revolt       BOOLEAN DEFAULT 0,
+    original_attacker_id INTEGER,           -- country numeric ID
+    original_target_id INTEGER,             -- country numeric ID
+    original_defenders TEXT,                -- JSON list of country IDs
+    goal_type       TEXT,                   -- e.g. "parliament_conquer_province"
+    casus_belli     TEXT,                   -- e.g. "cb_parliament_conquer_province"
+    goal_target     TEXT,                   -- JSON blob of target info
+    PRIMARY KEY(playthrough_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS war_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    war_id          TEXT NOT NULL,
+    game_date       TEXT NOT NULL,
+    attacker_score  REAL,
+    defender_score  REAL,
+    net_war_score   REAL,                   -- derived: attacker - defender
+    war_direction_quarter REAL,
+    war_direction_year REAL,
+    war_goal_held   INTEGER                 -- location ID (nullable)
+);
+CREATE INDEX IF NOT EXISTS idx_war_snap
+    ON war_snapshots(playthrough_id, snapshot_id);
+
+CREATE TABLE IF NOT EXISTS war_participants (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    war_id          TEXT NOT NULL,
+    country_id      INTEGER NOT NULL,       -- numeric country ID
+    country_tag     TEXT,                   -- resolved TAG
+    side            TEXT NOT NULL,           -- "Attacker" or "Defender"
+    join_reason     TEXT,                   -- "Instigator", "Target", "Called", etc.
+    join_type       TEXT,                   -- "Always", "Called", etc.
+    called_by       INTEGER,                -- country ID that called (nullable)
+    join_date       TEXT,
+    status          TEXT DEFAULT 'Active',  -- "Active", "Left", "Declined"
+    score_combat    REAL DEFAULT 0,
+    score_siege     REAL DEFAULT 0,
+    score_joining   REAL DEFAULT 0,
+    losses          TEXT,                   -- JSON blob {unit_type: {cause: count}}
+    io_id           INTEGER,                -- international_organization link (nullable)
+    UNIQUE(playthrough_id, war_id, country_id)
+);
 """
 
 
@@ -357,3 +441,203 @@ class Database:
             (note, event_id),
         )
         await self.conn.commit()
+
+    # ------------------------------------------------------------------
+    # Religions
+    # ------------------------------------------------------------------
+
+    async def upsert_religion(
+        self,
+        playthrough_id: str,
+        religion_id: int,
+        definition: str,
+        name: str = "",
+        religion_group: str = "",
+        has_religious_head: bool = False,
+        color_rgb: list | None = None,
+    ) -> None:
+        """Create or update a religion static record."""
+        await self.conn.execute(
+            """INSERT INTO religions
+               (id, playthrough_id, definition, name, religion_group,
+                has_religious_head, color_rgb)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(playthrough_id, id) DO UPDATE SET
+                   name = excluded.name,
+                   has_religious_head = excluded.has_religious_head""",
+            (religion_id, playthrough_id, definition, name, religion_group,
+             has_religious_head, json.dumps(color_rgb) if color_rgb else None),
+        )
+
+    async def insert_religion_snapshots(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        game_date: str,
+        rows: list[dict],
+    ) -> int:
+        """Bulk-insert religion snapshot rows."""
+        if not rows:
+            return 0
+        data = [
+            (playthrough_id, snapshot_id, r["religion_id"], game_date,
+             r.get("important_country"), r.get("reform_desire"),
+             r.get("tithe"), r.get("saint_power"),
+             r.get("timed_modifier_count", 0))
+            for r in rows
+        ]
+        await self.conn.executemany(
+            """INSERT INTO religion_snapshots
+               (playthrough_id, snapshot_id, religion_id, game_date,
+                important_country, reform_desire, tithe, saint_power,
+                timed_modifier_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            data,
+        )
+        return len(data)
+
+    async def get_religion_snapshots(
+        self,
+        playthrough_id: str,
+        religion_id: int | None = None,
+    ) -> list[dict]:
+        """Get religion snapshots, optionally filtered by religion_id."""
+        query = "SELECT * FROM religion_snapshots WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if religion_id is not None:
+            query += " AND religion_id = ?"
+            params.append(religion_id)
+        query += " ORDER BY game_date ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_religions(self, playthrough_id: str) -> list[dict]:
+        """Get all religion static records for a playthrough."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM religions WHERE playthrough_id = ? ORDER BY id",
+            (playthrough_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Wars
+    # ------------------------------------------------------------------
+
+    async def upsert_war(self, playthrough_id: str, war: dict) -> None:
+        """Create or update a war static record."""
+        await self.conn.execute(
+            """INSERT INTO wars
+               (id, playthrough_id, name_key, name_display, start_date, end_date,
+                is_civil_war, is_revolt, original_attacker_id, original_target_id,
+                original_defenders, goal_type, casus_belli, goal_target)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(playthrough_id, id) DO UPDATE SET
+                   end_date = excluded.end_date,
+                   name_display = excluded.name_display""",
+            (war["id"], playthrough_id, war.get("name_key"), war.get("name_display"),
+             war.get("start_date"), war.get("end_date"),
+             war.get("is_civil_war", False), war.get("is_revolt", False),
+             war.get("original_attacker_id"), war.get("original_target_id"),
+             json.dumps(war.get("original_defenders")),
+             war.get("goal_type"), war.get("casus_belli"),
+             json.dumps(war.get("goal_target"))),
+        )
+
+    async def insert_war_snapshots(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        game_date: str,
+        rows: list[dict],
+    ) -> int:
+        """Bulk-insert war snapshot rows."""
+        if not rows:
+            return 0
+        data = [
+            (playthrough_id, snapshot_id, r["war_id"], game_date,
+             r.get("attacker_score"), r.get("defender_score"),
+             r.get("net_war_score"), r.get("war_direction_quarter"),
+             r.get("war_direction_year"), r.get("war_goal_held"))
+            for r in rows
+        ]
+        await self.conn.executemany(
+            """INSERT INTO war_snapshots
+               (playthrough_id, snapshot_id, war_id, game_date,
+                attacker_score, defender_score, net_war_score,
+                war_direction_quarter, war_direction_year, war_goal_held)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            data,
+        )
+        return len(data)
+
+    async def upsert_war_participants(
+        self,
+        playthrough_id: str,
+        war_id: str,
+        participants: list[dict],
+    ) -> int:
+        """Upsert war participant records (insert or update status/scores)."""
+        if not participants:
+            return 0
+        for p in participants:
+            await self.conn.execute(
+                """INSERT INTO war_participants
+                   (playthrough_id, war_id, country_id, country_tag, side,
+                    join_reason, join_type, called_by, join_date, status,
+                    score_combat, score_siege, score_joining, losses, io_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(playthrough_id, war_id, country_id) DO UPDATE SET
+                       status = excluded.status,
+                       score_combat = excluded.score_combat,
+                       score_siege = excluded.score_siege,
+                       score_joining = excluded.score_joining,
+                       losses = excluded.losses""",
+                (playthrough_id, war_id, p["country_id"], p.get("country_tag"),
+                 p["side"], p.get("join_reason"), p.get("join_type"),
+                 p.get("called_by"), p.get("join_date"), p.get("status", "Active"),
+                 p.get("score_combat", 0), p.get("score_siege", 0),
+                 p.get("score_joining", 0),
+                 json.dumps(p.get("losses")) if p.get("losses") else None,
+                 p.get("io_id")),
+            )
+        return len(participants)
+
+    async def get_wars(
+        self,
+        playthrough_id: str,
+        active_only: bool = False,
+    ) -> list[dict]:
+        """Get all wars for a playthrough."""
+        query = "SELECT * FROM wars WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if active_only:
+            query += " AND end_date IS NULL"
+        query += " ORDER BY start_date ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_war_participants(
+        self, playthrough_id: str, war_id: str | None = None,
+    ) -> list[dict]:
+        """Get war participants, optionally filtered by war_id."""
+        query = "SELECT * FROM war_participants WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if war_id is not None:
+            query += " AND war_id = ?"
+            params.append(war_id)
+        query += " ORDER BY war_id, side, join_date"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_war_snapshots(
+        self, playthrough_id: str, war_id: str | None = None,
+    ) -> list[dict]:
+        """Get war snapshot history, optionally filtered by war_id."""
+        query = "SELECT * FROM war_snapshots WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if war_id is not None:
+            query += " AND war_id = ?"
+            params.append(war_id)
+        query += " ORDER BY game_date ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]

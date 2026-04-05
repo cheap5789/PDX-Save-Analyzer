@@ -30,6 +30,11 @@ from backend.parser.eu5.field_catalog import (
 from backend.parser.eu5.snapshot import extract_snapshot
 from backend.parser.eu5.summary import extract_summary, GameSummary
 from backend.parser.eu5.events import diff_summaries, GameEvent
+from backend.parser.eu5.religions import extract_religion_statics, extract_religion_snapshot_rows
+from backend.parser.eu5.wars import (
+    extract_war_statics, extract_war_snapshot_rows,
+    extract_all_war_participants, detect_battle_events,
+)
 from backend.parser.eu5.game_date import should_snapshot
 from backend.storage.database import Database
 from backend.watcher.file_watcher import SaveFileWatcher
@@ -78,6 +83,7 @@ class WatcherPipeline:
         self._last_summary: GameSummary | None = None
         self._enabled_fields: list[FieldDef] = []
         self._started_at: float = 0.0  # monotonic timestamp — files older than this are skipped
+        self._last_battle_state: dict[str, dict] | None = None  # {war_id: {date, location}}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -210,12 +216,25 @@ class WatcherPipeline:
         events = diff_summaries(self._last_summary, summary)
         self._last_summary = summary
 
+        # Collect all event dicts to insert
+        all_event_dicts: list[dict] = []
+
         if events:
-            event_dicts = [
+            all_event_dicts.extend(
                 {"game_date": e.game_date, "event_type": e.event_type, "payload": e.payload}
                 for e in events
-            ]
-            count = await self._db.insert_events(pt_id, event_dicts)
+            )
+
+        # Step 3b: Battle event detection (always, every save)
+        battle_events, new_battle_state = detect_battle_events(
+            save, self._last_battle_state,
+        )
+        self._last_battle_state = new_battle_state
+        if battle_events:
+            all_event_dicts.extend(battle_events)  # already dicts
+
+        if all_event_dicts:
+            count = await self._db.insert_events(pt_id, all_event_dicts)
             logger.info(f"  {count} events recorded")
             if self._on_events:
                 self._on_events(events)
@@ -232,6 +251,53 @@ class WatcherPipeline:
             logger.info(f"  Snapshot #{snap_id} recorded at {save.game_date}")
             if self._on_snapshot:
                 self._on_snapshot(snapshot_data)
+
+            # Step 6: Religion entity tracking
+            try:
+                rel_statics = extract_religion_statics(save)
+                for r in rel_statics:
+                    await self._db.upsert_religion(
+                        playthrough_id=pt_id,
+                        religion_id=r["religion_id"],
+                        definition=r["definition"],
+                        name=r.get("name", ""),
+                        religion_group=r.get("religion_group", ""),
+                        has_religious_head=r.get("has_religious_head", False),
+                        color_rgb=r.get("color_rgb"),
+                    )
+                rel_rows = extract_religion_snapshot_rows(save)
+                rel_count = await self._db.insert_religion_snapshots(
+                    pt_id, snap_id, save.game_date, rel_rows,
+                )
+                logger.info(f"  {len(rel_statics)} religions upserted, {rel_count} snapshot rows")
+            except Exception:
+                logger.exception("Error in religion extraction")
+
+            # Step 7: War entity tracking
+            try:
+                war_statics = extract_war_statics(save)
+                for w in war_statics:
+                    await self._db.upsert_war(pt_id, w)
+
+                war_snap_rows = extract_war_snapshot_rows(save)
+                war_snap_count = await self._db.insert_war_snapshots(
+                    pt_id, snap_id, save.game_date, war_snap_rows,
+                )
+
+                all_participants = extract_all_war_participants(save)
+                part_count = 0
+                for wid, parts in all_participants.items():
+                    part_count += await self._db.upsert_war_participants(
+                        pt_id, wid, parts,
+                    )
+
+                logger.info(
+                    f"  {len(war_statics)} wars upserted, "
+                    f"{war_snap_count} war snapshot rows, "
+                    f"{part_count} participants"
+                )
+            except Exception:
+                logger.exception("Error in war extraction")
         else:
             logger.info(f"  Skipped snapshot (freq={self.config.snapshot_freq}, date={save.game_date})")
 
