@@ -35,6 +35,11 @@ from backend.parser.eu5.wars import (
     extract_war_statics, extract_war_snapshot_rows,
     extract_all_war_participants, detect_battle_events,
 )
+from backend.parser.eu5.geography import (
+    extract_location_statics, extract_location_snapshot_rows,
+    extract_province_statics, extract_province_snapshot_rows,
+    detect_location_events,
+)
 from backend.parser.eu5.game_date import should_snapshot
 from backend.storage.database import Database
 from backend.watcher.file_watcher import SaveFileWatcher
@@ -84,6 +89,7 @@ class WatcherPipeline:
         self._enabled_fields: list[FieldDef] = []
         self._started_at: float = 0.0  # monotonic timestamp — files older than this are skipped
         self._last_battle_state: dict[str, dict] | None = None  # {war_id: {date, location}}
+        self._last_location_state: dict[int, dict] | None = None  # {loc_id: {fields}}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -233,6 +239,14 @@ class WatcherPipeline:
         if battle_events:
             all_event_dicts.extend(battle_events)  # already dicts
 
+        # Step 3c: Location event detection (always, every save)
+        loc_events, new_loc_state = detect_location_events(
+            save, self._last_location_state,
+        )
+        self._last_location_state = new_loc_state
+        if loc_events:
+            all_event_dicts.extend(loc_events)  # already dicts
+
         if all_event_dicts:
             count = await self._db.insert_events(pt_id, all_event_dicts)
             logger.info(f"  {count} events recorded")
@@ -298,6 +312,33 @@ class WatcherPipeline:
                 )
             except Exception:
                 logger.exception("Error in war extraction")
+
+            # Step 8: Geography entity tracking (locations + provinces)
+            try:
+                loc_statics = extract_location_statics(save)
+                loc_static_count = await self._db.bulk_upsert_locations(pt_id, loc_statics)
+
+                loc_rows = extract_location_snapshot_rows(save)
+                loc_snap_count = await self._db.insert_location_snapshots(
+                    pt_id, snap_id, save.game_date, loc_rows,
+                )
+
+                prov_statics = extract_province_statics(save)
+                prov_static_count = await self._db.bulk_upsert_provinces(pt_id, prov_statics)
+
+                prov_rows = extract_province_snapshot_rows(save)
+                prov_snap_count = await self._db.insert_province_snapshots(
+                    pt_id, snap_id, save.game_date, prov_rows,
+                )
+
+                logger.info(
+                    f"  Geography: {loc_static_count} locations, "
+                    f"{loc_snap_count} loc snapshots, "
+                    f"{prov_static_count} provinces, "
+                    f"{prov_snap_count} prov snapshots"
+                )
+            except Exception:
+                logger.exception("Error in geography extraction")
         else:
             logger.info(f"  Skipped snapshot (freq={self.config.snapshot_freq}, date={save.game_date})")
 

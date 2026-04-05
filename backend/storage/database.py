@@ -144,6 +144,86 @@ CREATE TABLE IF NOT EXISTS war_participants (
     io_id           INTEGER,                -- international_organization link (nullable)
     UNIQUE(playthrough_id, war_id, country_id)
 );
+
+-- ── Geography entity tables ────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS locations (
+    id              INTEGER NOT NULL,           -- location ID from locations.locations key
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    province_id     INTEGER,                    -- references provinces.id (nullable for sea/TI)
+    raw_material    TEXT,                       -- e.g. "clay", "wheat", "lumber"
+    is_port         BOOLEAN DEFAULT 0,          -- has a port
+    holy_sites      TEXT,                       -- JSON list of religion IDs
+    PRIMARY KEY(playthrough_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS location_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    location_id     INTEGER NOT NULL,
+    game_date       TEXT NOT NULL,
+    -- Ownership & Control
+    owner_id        INTEGER,
+    controller_id   INTEGER,
+    previous_owner_id INTEGER,
+    last_owner_change TEXT,
+    last_controller_change TEXT,
+    cores           TEXT,                       -- JSON list of country IDs
+    garrison        REAL,
+    control         REAL,                       -- 0-1 float
+    -- Demographics & Culture
+    culture_id      INTEGER,
+    secondary_culture_id INTEGER,
+    cultural_unity  REAL,
+    religion_id     INTEGER,
+    religious_unity REAL,
+    language        TEXT,
+    dialect         TEXT,
+    pop_count       INTEGER,                   -- counters.Pops
+    -- Economic Geography
+    rank            TEXT,                       -- "rural_settlement", "town", "city"
+    development     REAL,
+    prosperity      REAL,
+    tax             REAL,
+    possible_tax    REAL,
+    market_id       INTEGER,
+    market_access   REAL,
+    value_flow      REAL,
+    institutions    TEXT,                       -- JSON blob {institution_key: spread_pct}
+    -- Geopolitical Status
+    integration_type TEXT,                      -- "core", "integrated", "conquered", "colonized", "none"
+    integration_owner_id INTEGER,
+    slave_raid_date TEXT                        -- nullable; date of last slave raid
+);
+CREATE INDEX IF NOT EXISTS idx_loc_snap_pt
+    ON location_snapshots(playthrough_id, snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_loc_snap_loc
+    ON location_snapshots(playthrough_id, location_id, game_date);
+
+CREATE TABLE IF NOT EXISTS provinces (
+    id              INTEGER NOT NULL,           -- province_id from provinces.database key
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    province_definition TEXT,                   -- config key string
+    capital_location_id INTEGER,
+    PRIMARY KEY(playthrough_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS province_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    province_id     INTEGER NOT NULL,
+    game_date       TEXT NOT NULL,
+    owner_id        INTEGER,
+    food_current    REAL,
+    food_max        REAL,
+    food_change_delta REAL,
+    trade_balance   REAL,
+    goods_produced  TEXT                        -- JSON blob {good_type: amount}
+);
+CREATE INDEX IF NOT EXISTS idx_prov_snap
+    ON province_snapshots(playthrough_id, snapshot_id);
 """
 
 
@@ -639,5 +719,206 @@ class Database:
             query += " AND war_id = ?"
             params.append(war_id)
         query += " ORDER BY game_date ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Locations
+    # ------------------------------------------------------------------
+
+    async def upsert_location(self, playthrough_id: str, loc: dict) -> None:
+        """Create or update a location static record."""
+        await self.conn.execute(
+            """INSERT INTO locations
+               (id, playthrough_id, province_id, raw_material, is_port, holy_sites)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(playthrough_id, id) DO UPDATE SET
+                   raw_material = excluded.raw_material,
+                   is_port = excluded.is_port""",
+            (loc["id"], playthrough_id,
+             loc.get("province_id"), loc.get("raw_material"),
+             loc.get("is_port", False),
+             json.dumps(loc.get("holy_sites")) if loc.get("holy_sites") else None),
+        )
+
+    async def bulk_upsert_locations(
+        self, playthrough_id: str, locs: list[dict],
+    ) -> int:
+        """Bulk upsert location static records."""
+        if not locs:
+            return 0
+        data = [
+            (loc["id"], playthrough_id,
+             loc.get("province_id"), loc.get("raw_material"),
+             loc.get("is_port", False),
+             json.dumps(loc.get("holy_sites")) if loc.get("holy_sites") else None)
+            for loc in locs
+        ]
+        await self.conn.executemany(
+            """INSERT INTO locations
+               (id, playthrough_id, province_id, raw_material, is_port, holy_sites)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(playthrough_id, id) DO UPDATE SET
+                   raw_material = excluded.raw_material,
+                   is_port = excluded.is_port""",
+            data,
+        )
+        return len(data)
+
+    async def insert_location_snapshots(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        game_date: str,
+        rows: list[dict],
+    ) -> int:
+        """Bulk-insert location snapshot rows (one per owned location)."""
+        if not rows:
+            return 0
+        data = [
+            (playthrough_id, snapshot_id, r["location_id"], game_date,
+             r.get("owner_id"), r.get("controller_id"), r.get("previous_owner_id"),
+             r.get("last_owner_change"), r.get("last_controller_change"),
+             json.dumps(r["cores"]) if r.get("cores") else None,
+             r.get("garrison"), r.get("control"),
+             r.get("culture_id"), r.get("secondary_culture_id"), r.get("cultural_unity"),
+             r.get("religion_id"), r.get("religious_unity"),
+             r.get("language"), r.get("dialect"), r.get("pop_count"),
+             r.get("rank"), r.get("development"), r.get("prosperity"),
+             r.get("tax"), r.get("possible_tax"),
+             r.get("market_id"), r.get("market_access"), r.get("value_flow"),
+             json.dumps(r["institutions"]) if r.get("institutions") else None,
+             r.get("integration_type"), r.get("integration_owner_id"),
+             r.get("slave_raid_date"))
+            for r in rows
+        ]
+        await self.conn.executemany(
+            """INSERT INTO location_snapshots
+               (playthrough_id, snapshot_id, location_id, game_date,
+                owner_id, controller_id, previous_owner_id,
+                last_owner_change, last_controller_change,
+                cores, garrison, control,
+                culture_id, secondary_culture_id, cultural_unity,
+                religion_id, religious_unity,
+                language, dialect, pop_count,
+                rank, development, prosperity,
+                tax, possible_tax,
+                market_id, market_access, value_flow,
+                institutions,
+                integration_type, integration_owner_id,
+                slave_raid_date)
+               VALUES (?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?, ?,?,?)""",
+            data,
+        )
+        return len(data)
+
+    async def get_locations(self, playthrough_id: str) -> list[dict]:
+        """Get all location static records for a playthrough."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM locations WHERE playthrough_id = ? ORDER BY id",
+            (playthrough_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_location_snapshots(
+        self,
+        playthrough_id: str,
+        location_id: int | None = None,
+        snapshot_id: int | None = None,
+        owner_id: int | None = None,
+    ) -> list[dict]:
+        """Get location snapshots with optional filters."""
+        query = "SELECT * FROM location_snapshots WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if location_id is not None:
+            query += " AND location_id = ?"
+            params.append(location_id)
+        if snapshot_id is not None:
+            query += " AND snapshot_id = ?"
+            params.append(snapshot_id)
+        if owner_id is not None:
+            query += " AND owner_id = ?"
+            params.append(owner_id)
+        query += " ORDER BY game_date ASC, location_id ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Provinces
+    # ------------------------------------------------------------------
+
+    async def bulk_upsert_provinces(
+        self, playthrough_id: str, provs: list[dict],
+    ) -> int:
+        """Bulk upsert province static records."""
+        if not provs:
+            return 0
+        data = [
+            (p["id"], playthrough_id,
+             p.get("province_definition"), p.get("capital_location_id"))
+            for p in provs
+        ]
+        await self.conn.executemany(
+            """INSERT INTO provinces
+               (id, playthrough_id, province_definition, capital_location_id)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(playthrough_id, id) DO UPDATE SET
+                   province_definition = excluded.province_definition,
+                   capital_location_id = excluded.capital_location_id""",
+            data,
+        )
+        return len(data)
+
+    async def insert_province_snapshots(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        game_date: str,
+        rows: list[dict],
+    ) -> int:
+        """Bulk-insert province snapshot rows."""
+        if not rows:
+            return 0
+        data = [
+            (playthrough_id, snapshot_id, r["province_id"], game_date,
+             r.get("owner_id"), r.get("food_current"), r.get("food_max"),
+             r.get("food_change_delta"), r.get("trade_balance"),
+             json.dumps(r["goods_produced"]) if r.get("goods_produced") else None)
+            for r in rows
+        ]
+        await self.conn.executemany(
+            """INSERT INTO province_snapshots
+               (playthrough_id, snapshot_id, province_id, game_date,
+                owner_id, food_current, food_max, food_change_delta,
+                trade_balance, goods_produced)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            data,
+        )
+        return len(data)
+
+    async def get_provinces(self, playthrough_id: str) -> list[dict]:
+        """Get all province static records for a playthrough."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM provinces WHERE playthrough_id = ? ORDER BY id",
+            (playthrough_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_province_snapshots(
+        self,
+        playthrough_id: str,
+        province_id: int | None = None,
+        snapshot_id: int | None = None,
+    ) -> list[dict]:
+        """Get province snapshots with optional filters."""
+        query = "SELECT * FROM province_snapshots WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if province_id is not None:
+            query += " AND province_id = ?"
+            params.append(province_id)
+        if snapshot_id is not None:
+            query += " AND snapshot_id = ?"
+            params.append(snapshot_id)
+        query += " ORDER BY game_date ASC, province_id ASC"
         cursor = await self.conn.execute(query, params)
         return [dict(r) for r in await cursor.fetchall()]

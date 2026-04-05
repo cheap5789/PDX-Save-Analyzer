@@ -182,6 +182,76 @@ class WarParticipantResponse(BaseModel):
     io_id: str | None = None
 
 
+class LocationResponse(BaseModel):
+    """Static location record."""
+    id: int
+    playthrough_id: str
+    province_id: int | None = None
+    raw_material: str | None = None
+    is_port: bool = False
+    holy_sites: list | None = None
+
+
+class LocationSnapshotResponse(BaseModel):
+    """Location snapshot row — one per owned location per snapshot."""
+    id: int
+    playthrough_id: str
+    snapshot_id: int
+    location_id: int
+    game_date: str
+    owner_id: int | None = None
+    controller_id: int | None = None
+    previous_owner_id: int | None = None
+    last_owner_change: str | None = None
+    last_controller_change: str | None = None
+    cores: list | None = None
+    garrison: float | None = None
+    control: float | None = None
+    culture_id: int | None = None
+    secondary_culture_id: int | None = None
+    cultural_unity: float | None = None
+    religion_id: int | None = None
+    religious_unity: float | None = None
+    language: str | None = None
+    dialect: str | None = None
+    pop_count: int | None = None
+    rank: str | None = None
+    development: float | None = None
+    prosperity: float | None = None
+    tax: float | None = None
+    possible_tax: float | None = None
+    market_id: int | None = None
+    market_access: float | None = None
+    value_flow: float | None = None
+    institutions: dict | None = None
+    integration_type: str | None = None
+    integration_owner_id: int | None = None
+    slave_raid_date: str | None = None
+
+
+class ProvinceResponse(BaseModel):
+    """Static province record."""
+    id: int
+    playthrough_id: str
+    province_definition: str | None = None
+    capital_location_id: int | None = None
+
+
+class ProvinceSnapshotResponse(BaseModel):
+    """Province snapshot row — food economy data per snapshot."""
+    id: int
+    playthrough_id: str
+    snapshot_id: int
+    province_id: int
+    game_date: str
+    owner_id: int | None = None
+    food_current: float | None = None
+    food_max: float | None = None
+    food_change_delta: float | None = None
+    trade_balance: float | None = None
+    goods_produced: dict | None = None
+
+
 # ---------------------------------------------------------------------------
 # WebSocket message types
 # ---------------------------------------------------------------------------

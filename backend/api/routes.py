@@ -14,6 +14,10 @@ Endpoints:
     GET  /api/wars/{id}                     War statics for a playthrough
     GET  /api/wars/{id}/snapshots           War score data over time
     GET  /api/wars/{id}/participants        War participants with scores/losses
+    GET  /api/locations/{id}                Location statics for a playthrough
+    GET  /api/locations/{id}/snapshots      Location snapshot data (filterable)
+    GET  /api/provinces/{id}                Province statics for a playthrough
+    GET  /api/provinces/{id}/snapshots      Province food economy over time
     PATCH /api/events/{id}/note             Set AAR note on an event
     WS   /ws                                Live push (snapshots + events)
 """
@@ -34,6 +38,8 @@ from backend.api.schemas import (
     UpdateAarNoteRequest, SavedConfig, LoadPlaythroughRequest,
     ReligionResponse, ReligionSnapshotResponse,
     WarResponse, WarSnapshotResponse, WarParticipantResponse,
+    LocationResponse, LocationSnapshotResponse,
+    ProvinceResponse, ProvinceSnapshotResponse,
 )
 from backend.config import SessionConfig
 from backend.parser.eu5.field_catalog import FIELD_CATALOG
@@ -438,6 +444,99 @@ async def get_war_participants(
             except (json.JSONDecodeError, TypeError):
                 pass
         result.append(WarParticipantResponse(**d))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/locations/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/api/locations/{playthrough_id}", response_model=list[LocationResponse])
+async def get_locations(playthrough_id: str) -> list[LocationResponse]:
+    """List all location static records for a playthrough."""
+    db = await _get_db()
+    rows = await db.get_locations(playthrough_id)
+    result = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("holy_sites"), str):
+            d["holy_sites"] = json.loads(d["holy_sites"])
+        result.append(LocationResponse(**d))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/locations/{playthrough_id}/snapshots
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/locations/{playthrough_id}/snapshots",
+    response_model=list[LocationSnapshotResponse],
+)
+async def get_location_snapshots(
+    playthrough_id: str,
+    location_id: int | None = Query(None, description="Filter by location ID"),
+    snapshot_id: int | None = Query(None, description="Filter by snapshot ID"),
+    owner_id: int | None = Query(None, description="Filter by owner country ID"),
+) -> list[LocationSnapshotResponse]:
+    """Location snapshot data. Use filters to limit results — unfiltered returns all ~13k×snapshots."""
+    db = await _get_db()
+    rows = await db.get_location_snapshots(
+        playthrough_id, location_id=location_id,
+        snapshot_id=snapshot_id, owner_id=owner_id,
+    )
+    result = []
+    for r in rows:
+        d = dict(r)
+        for key in ("cores", "institutions"):
+            if isinstance(d.get(key), str):
+                try:
+                    d[key] = json.loads(d[key])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        result.append(LocationSnapshotResponse(**d))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/provinces/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/api/provinces/{playthrough_id}", response_model=list[ProvinceResponse])
+async def get_provinces(playthrough_id: str) -> list[ProvinceResponse]:
+    """List all province static records for a playthrough."""
+    db = await _get_db()
+    rows = await db.get_provinces(playthrough_id)
+    return [ProvinceResponse(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/provinces/{playthrough_id}/snapshots
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/provinces/{playthrough_id}/snapshots",
+    response_model=list[ProvinceSnapshotResponse],
+)
+async def get_province_snapshots(
+    playthrough_id: str,
+    province_id: int | None = Query(None, description="Filter by province ID"),
+    snapshot_id: int | None = Query(None, description="Filter by snapshot ID"),
+) -> list[ProvinceSnapshotResponse]:
+    """Province snapshot data (food economy)."""
+    db = await _get_db()
+    rows = await db.get_province_snapshots(
+        playthrough_id, province_id=province_id, snapshot_id=snapshot_id,
+    )
+    result = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("goods_produced"), str):
+            try:
+                d["goods_produced"] = json.loads(d["goods_produced"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result.append(ProvinceSnapshotResponse(**d))
     return result
 
 
