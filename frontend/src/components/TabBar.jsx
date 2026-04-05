@@ -2,6 +2,10 @@ const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'charts', label: 'Charts' },
   { id: 'events', label: 'Events' },
+  { id: 'religions', label: 'Religions' },
+  { id: 'wars', label: 'Wars' },
+  { id: 'territory', label: 'Territory' },
+  { id: 'demographics', label: 'Demographics' },
   { id: 'config', label: 'Config' },
 ]
 

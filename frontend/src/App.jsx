@@ -6,6 +6,10 @@ import OverviewTab from './components/tabs/OverviewTab'
 import ChartsTab from './components/tabs/ChartsTab'
 import EventsTab from './components/tabs/EventsTab'
 import ConfigTab from './components/tabs/ConfigTab'
+import ReligionsTab from './components/tabs/ReligionsTab'
+import WarsTab from './components/tabs/WarsTab'
+import TerritoryTab from './components/tabs/TerritoryTab'
+import DemographicsTab from './components/tabs/DemographicsTab'
 
 export default function App() {
   const api = useApi()
@@ -149,6 +153,18 @@ export default function App() {
         )}
         {activeTab === 'events' && (
           <EventsTab events={allEvents} status={status} onEventNoteUpdated={handleEventNoteUpdated} />
+        )}
+        {activeTab === 'religions' && (
+          <ReligionsTab status={status} />
+        )}
+        {activeTab === 'wars' && (
+          <WarsTab status={status} />
+        )}
+        {activeTab === 'territory' && (
+          <TerritoryTab status={status} />
+        )}
+        {activeTab === 'demographics' && (
+          <DemographicsTab status={status} />
         )}
         {activeTab === 'config' && (
           <ConfigTab status={status} onStatusChange={handleStatusChange} />
