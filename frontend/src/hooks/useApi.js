@@ -52,14 +52,22 @@ export function useApi() {
       return request('GET', `/api/snapshots/${playthroughId}${q}`)
     },
 
-    /** GET /api/events/:id?event_type=&limit= */
-    getEvents: (playthroughId, { event_type, limit } = {}) => {
+    /** GET /api/events/:id?event_type=&country_tag=&include_global=&limit= */
+    getEvents: (playthroughId, { event_type, country_tags, include_global, limit } = {}) => {
       const params = new URLSearchParams()
       if (event_type) params.set('event_type', event_type)
+      if (country_tags && country_tags.length > 0) {
+        country_tags.forEach((t) => params.append('country_tag', t))
+      }
+      if (include_global === false) params.set('include_global', 'false')
       if (limit) params.set('limit', limit)
       const q = params.toString() ? `?${params}` : ''
       return request('GET', `/api/events/${playthroughId}${q}`)
     },
+
+    /** GET /api/events/:id/country-tags */
+    getEventCountryTags: (playthroughId) =>
+      request('GET', `/api/events/${playthroughId}/country-tags`),
 
     /** PATCH /api/events/:id/note — set or update AAR note */
     updateAarNote: (eventId, note) =>

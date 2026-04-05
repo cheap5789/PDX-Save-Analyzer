@@ -92,6 +92,8 @@ class EventResponse(BaseModel):
     payload: dict | None = None
     aar_note: str | None = None
     recorded_at: str
+    country_tag: str | None = None
+    dedup_key: str | None = None
 
 
 class FieldDefResponse(BaseModel):

@@ -4,19 +4,54 @@ database.py — Async SQLite database layer
 One Database instance per game (eu5.db, ck3.db, etc.).
 All operations are async (aiosqlite) for FastAPI compatibility.
 
-Tables:
-    playthroughs  — one row per campaign
-    snapshots     — one row per recorded snapshot (at configured frequency)
-    events        — one row per detected event (every save)
+Schema (tables, all prefixed with their group):
+
+  Core:
+    playthroughs        — one row per campaign (UUID PK from save metadata)
+    snapshots           — one row per recorded snapshot (at configured frequency)
+    events              — one row per detected event (every save parse)
+                          Key columns:
+                            dedup_key TEXT  — stable unique key for one-time events
+                                             (NULL for repeatable events); enforced
+                                             by a partial UNIQUE index so INSERT OR
+                                             IGNORE silently drops re-emitted events
+                                             on pipeline restart
+                            country_tag TEXT — primary country for single-country
+                                              events; NULL for wars/situations/ages
+
+  Religions:
+    religions           — static religion metadata (written once per religion per campaign)
+    religion_snapshots  — per-religion metrics at each snapshot date
+
+  Wars:
+    wars                — static war metadata (written once on first sight)
+    war_snapshots       — score progression at each snapshot date
+    war_participants    — one row per country per war (status, losses, scores)
+
+  Geography:
+    locations           — static location metadata (raw material, port, holy sites)
+    location_snapshots  — per-location ownership/demographics/economy at each snapshot
+    provinces           — static province metadata
+    province_snapshots  — per-province food economy at each snapshot
+
+  Demographics:
+    pop_snapshots       — individual pop rows at each snapshot (~107k rows per snapshot)
+                          Aggregate queries via get_pop_aggregates() group by type,
+                          culture, religion, estate, location, or status.
+
+Schema migrations are handled automatically in _run_migrations() called from open().
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import aiosqlite
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -56,10 +91,15 @@ CREATE TABLE IF NOT EXISTS events (
     event_type      TEXT NOT NULL,      -- "ruler_changed", "war_started", etc.
     payload         TEXT,               -- JSON with event-specific data
     aar_note        TEXT,               -- user-written AAR annotation (nullable)
-    recorded_at     TEXT NOT NULL       -- wall-clock ISO timestamp
+    recorded_at     TEXT NOT NULL,      -- wall-clock ISO timestamp
+    dedup_key       TEXT,               -- unique key for one-time events (nullable)
+    country_tag     TEXT                -- primary country tag for single-country events (nullable)
 );
 CREATE INDEX IF NOT EXISTS idx_events_playthrough
     ON events(playthrough_id, game_date);
+-- NOTE: idx_events_dedup and idx_events_country are created by _run_migrations()
+--       (not here) because they reference dedup_key/country_tag columns that may
+--       not exist yet on databases that predate the Phase 9 event-system rework.
 
 -- ── Religion entity tables ──────────────────────────────────────────────
 
@@ -289,6 +329,51 @@ class Database:
         await self._conn.executescript(_SCHEMA_SQL)
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.commit()
+        await self._run_migrations()
+
+    async def _run_migrations(self) -> None:
+        """
+        Idempotent schema migrations.
+
+        Adds dedup_key and country_tag columns to the events table if they don't
+        exist yet (upgrade from schema before event-system rework).  When new
+        columns are added the existing event rows are cleared because they lack
+        dedup_key data and would bypass the unique-index deduplication.
+        """
+        cursor = await self.conn.execute("PRAGMA table_info(events)")
+        cols = {row[1] for row in await cursor.fetchall()}
+
+        needs_migration = "dedup_key" not in cols or "country_tag" not in cols
+        if needs_migration:
+            if "dedup_key" not in cols:
+                await self.conn.execute("ALTER TABLE events ADD COLUMN dedup_key TEXT")
+            if "country_tag" not in cols:
+                await self.conn.execute("ALTER TABLE events ADD COLUMN country_tag TEXT")
+
+            # Clear old events — they have no dedup_key so they'd always be
+            # re-inserted on the next pipeline run (the new INSERT OR IGNORE would
+            # not de-duplicate against them).  The pipeline re-records everything
+            # from the next save parse anyway.
+            await self.conn.execute("DELETE FROM events")
+            await self.conn.commit()
+            logger.info(
+                "DB migration: added dedup_key + country_tag columns to events; "
+                "cleared stale event rows"
+            )
+
+        # Always ensure the dedup/country indexes exist (idempotent).
+        # These are NOT in _SCHEMA_SQL because on an old DB the columns don't
+        # exist yet when executescript runs — so we create them here, after
+        # the ALTER TABLE above has guaranteed the columns are present.
+        await self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup "
+            "ON events(playthrough_id, dedup_key) WHERE dedup_key IS NOT NULL"
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_country "
+            "ON events(playthrough_id, country_tag)"
+        )
+        await self.conn.commit()
 
     async def close(self) -> None:
         if self._conn:
@@ -488,22 +573,40 @@ class Database:
         events: list[dict],
     ) -> int:
         """
-        Bulk-insert events. Each dict must have: game_date, event_type, payload.
-        Returns the number of events inserted.
+        Bulk-insert events using INSERT OR IGNORE.
+
+        Each dict must have: game_date, event_type, payload.
+        Optional fields: dedup_key (str|None), country_tag (str|None).
+
+        INSERT OR IGNORE silently drops rows that violate the unique index on
+        (playthrough_id, dedup_key), which prevents one-time events like
+        situation_started and war_started from being recorded twice when the
+        pipeline restarts.
+
+        Returns the number of rows passed in (some may have been ignored).
         """
         if not events:
             return 0
 
         now = _now_iso()
         rows = [
-            (playthrough_id, e["game_date"], e["event_type"],
-             json.dumps(e.get("payload", {})), None, now)
+            (
+                playthrough_id,
+                e["game_date"],
+                e["event_type"],
+                json.dumps(e.get("payload", {})),
+                None,
+                now,
+                e.get("dedup_key"),
+                e.get("country_tag"),
+            )
             for e in events
         ]
         await self.conn.executemany(
-            """INSERT INTO events
-               (playthrough_id, game_date, event_type, payload, aar_note, recorded_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+            """INSERT OR IGNORE INTO events
+               (playthrough_id, game_date, event_type, payload, aar_note, recorded_at,
+                dedup_key, country_tag)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         await self.conn.commit()
@@ -513,15 +616,44 @@ class Database:
         self,
         playthrough_id: str,
         event_type: str | None = None,
+        country_tags: list[str] | None = None,
+        include_global: bool = True,
         limit: int = 0,
     ) -> list[dict]:
-        """Get events for a playthrough, optionally filtered by type."""
+        """
+        Get events for a playthrough with optional type and country filters.
+
+        country_tags:   list of country tags to filter by (None = no filter).
+        include_global: when True (default) and country_tags is set, NULL-tagged
+                        events (age transitions, situations, all wars) are always
+                        included alongside the tag-matched events.
+                        When False, only directly-tagged events and war events
+                        where a selected tag appears in payload.participants are
+                        returned.
+        """
         query = "SELECT * FROM events WHERE playthrough_id = ?"
         params: list[Any] = [playthrough_id]
 
         if event_type:
             query += " AND event_type = ?"
             params.append(event_type)
+
+        if country_tags:
+            ph = ",".join("?" * len(country_tags))
+            if include_global:
+                # NULL-tagged events always shown; also match direct country events.
+                query += f" AND (country_tag IS NULL OR country_tag IN ({ph}))"
+                params.extend(country_tags)
+            else:
+                # Only tagged events matching the selection, plus war/global events
+                # where a participant tag matches.
+                participant_match = (
+                    f"EXISTS (SELECT 1 FROM json_each(json_extract(payload, '$.participants')) "
+                    f"WHERE value IN ({ph}))"
+                )
+                query += f" AND (country_tag IN ({ph}) OR {participant_match})"
+                params.extend(country_tags)   # country_tag IN
+                params.extend(country_tags)   # participant_match
 
         query += " ORDER BY game_date ASC"
 
@@ -532,6 +664,17 @@ class Database:
         cursor = await self.conn.execute(query, params)
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def get_event_country_tags(self, playthrough_id: str) -> list[str]:
+        """Return sorted list of distinct non-null country tags in events for a playthrough."""
+        cursor = await self.conn.execute(
+            """SELECT DISTINCT country_tag FROM events
+               WHERE playthrough_id = ? AND country_tag IS NOT NULL
+               ORDER BY country_tag""",
+            (playthrough_id,),
+        )
+        rows = await cursor.fetchall()
+        return [row["country_tag"] for row in rows]
 
     async def event_count(self, playthrough_id: str) -> int:
         cursor = await self.conn.execute(

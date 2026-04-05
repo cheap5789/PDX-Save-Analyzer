@@ -228,7 +228,13 @@ class WatcherPipeline:
 
         if events:
             all_event_dicts.extend(
-                {"game_date": e.game_date, "event_type": e.event_type, "payload": e.payload}
+                {
+                    "game_date": e.game_date,
+                    "event_type": e.event_type,
+                    "payload": e.payload,
+                    "dedup_key": e.dedup_key,
+                    "country_tag": e.country_tag,
+                }
                 for e in events
             )
 

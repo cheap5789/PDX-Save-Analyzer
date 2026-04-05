@@ -60,6 +60,7 @@ class SituationStatus:
     status: str                         # "before", "during", "after", or "inactive"
     start_date: str | None = None
     end_date: str | None = None
+    display: str = ""                   # localised situation name (empty = not loaded)
 
 
 @dataclass
@@ -144,14 +145,16 @@ def extract_summary(
     for wid, wdata in war_db.items():
         if not isinstance(wdata, dict):
             continue
-        # War objects vary — extract what we can
-        name = wdata.get("name", wdata.get("war_name", f"war_{wid}"))
-        if isinstance(name, dict):
-            # Sometimes name is a complex object; fall back to ID
-            name = f"war_{wid}"
-        name = str(name)
+        # War name lives in wdata["war_name"], which is a dict with a "name"
+        # key (the localisation key), not a plain string.  Mirror the logic
+        # in wars.py → extract_war_statics so both paths produce the same key.
+        war_name_raw = wdata.get("war_name", {})
+        if isinstance(war_name_raw, dict):
+            name = war_name_raw.get("name", f"war_{wid}")
+        else:
+            name = str(war_name_raw) if war_name_raw else f"war_{wid}"
 
-        # Localise war name: try the raw name as a loc key, otherwise keep it
+        # Localise war name: try the raw key against loc data
         name_display = _dn(save.loc, name) if has_loc else name
 
         attackers: list[str] = []
@@ -185,9 +188,14 @@ def extract_summary(
         if sit_key.startswith("_") or not isinstance(sit_data, (dict, list)):
             continue
 
+        # Localise situation key: try the key itself, then a _name variant
+        sit_display = _dn(save.loc, sit_key) if has_loc else sit_key
+
         if isinstance(sit_data, list) and len(sit_data) == 0:
             # Empty list = not triggered
-            situations[sit_key] = SituationStatus(key=sit_key, status="inactive")
+            situations[sit_key] = SituationStatus(
+                key=sit_key, status="inactive", display=sit_display,
+            )
         elif isinstance(sit_data, dict):
             # Has data — try to determine status
             status_val = sit_data.get("status", "unknown")
@@ -200,10 +208,13 @@ def extract_summary(
                 status=status,
                 start_date=str(sit_data.get("start_date", "")),
                 end_date=str(sit_data.get("end_date", "")),
+                display=sit_display,
             )
         elif isinstance(sit_data, str):
             # Some situations store just the status string
-            situations[sit_key] = SituationStatus(key=sit_key, status=sit_data)
+            situations[sit_key] = SituationStatus(
+                key=sit_key, status=sit_data, display=sit_display,
+            )
 
     return GameSummary(
         game_date=save.game_date,

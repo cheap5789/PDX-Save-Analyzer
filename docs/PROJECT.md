@@ -151,6 +151,30 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 **Rationale:** Always in sync with game patches, supports user's language automatically, no proprietary files in the project. A processed cache (`data/eu5_loc_cache.json`) is built on first run and invalidated when the game version changes.
 **Detail:** See `docs/CONFIGURATION.md` — Localisation Strategy section.
 
+### [2026-04-05] Entity snapshot tables for religions, wars, geography, demographics
+**Decision:** Four new entity groups added to the schema: religions (`religions`, `religion_snapshots`), wars (`wars`, `war_snapshots`, `war_participants`), geography (`locations`, `location_snapshots`, `provinces`, `province_snapshots`), and demographics (`pop_snapshots`). Each group has a static table (written once on first sight) and a snapshot table (written on each configured snapshot interval).
+**Rationale:** These entity groups are high-cardinality and change infrequently. Splitting static vs. snapshot data keeps snapshot rows narrow and queries fast. Pop snapshots (~107k rows per snapshot) are separated from location snapshots to allow independent querying and aggregation.
+**Detail:** See `backend/storage/database.py` for the full schema, and `backend/parser/eu5/` for the corresponding extractor modules (`religions.py`, `wars.py`, `geography.py`, `demographics.py`).
+
+### [2026-04-05] Frontend tabs for entity data (Religions, Wars, Territory, Demographics)
+**Decision:** Four new dashboard tabs added alongside the existing Overview, Charts, Events, and Config tabs: `ReligionsTab`, `WarsTab`, `TerritoryTab`, `DemographicsTab`. Each fetches its own data independently on mount, using the `useApi` hook.
+**Rationale:** Entity tabs are purely read-only historical views and have no dependency on live WebSocket data — they can fetch independently without complicating App.jsx state management. Tab-level isolation keeps each component self-contained.
+
+### [2026-04-05] Event deduplication via dedup_key + INSERT OR IGNORE
+**Decision:** One-time structural events (`situation_started`, `situation_ended`, `war_started`, `war_ended`, `age_transition`) are assigned a stable `dedup_key` string at generation time (e.g. `war_start:99`, `sit_start:fall_of_delhi`). The events table has a partial unique index on `(playthrough_id, dedup_key) WHERE dedup_key IS NOT NULL`. All inserts use `INSERT OR IGNORE`. Repeatable events (ruler changes, rank shifts, battles) have `dedup_key = NULL` and are never deduplicated.
+**Rationale:** Without deduplication, restarting the pipeline caused duplicate events: `_last_summary` is in-memory only, so on restart the first diff sees all active situations and wars as "new". The dedup approach is stateless, requires no pipeline state reconstruction, and is enforced at the DB level — no query-before-insert logic needed.
+**Detail:** See `backend/storage/database.py` (`_run_migrations`, `insert_events`) and `backend/parser/eu5/events.py`.
+
+### [2026-04-05] Events table: country_tag column + multi-select country filter
+**Decision:** A `country_tag TEXT` column added to the events table. Single-country events populate it at insert time from the event payload (`tag` field). Multi-country events (wars, situations, age transitions) have `country_tag = NULL`. A new `GET /api/events/{id}/country-tags` endpoint returns the distinct set of non-null tags for a playthrough. The EventsTab frontend shows multi-select country tag pills; an "Include global events" checkbox controls whether NULL-tagged events are shown when a country filter is active. War participant filtering (for the `include_global=false` path) uses `json_each` on `payload.participants`.
+**Rationale:** Players want to filter the event feed to a specific country. Country tagging at insert time is faster than JSON extraction at query time for the common case.
+**Detail:** See `backend/storage/database.py` (`get_events`), `backend/api/routes.py`, `frontend/src/components/tabs/EventsTab.jsx`.
+
+### [2026-04-05] Situation names localised; per-event-type EventCard descriptions
+**Decision:** `SituationStatus` now carries a `display: str` field populated via `display_name()` at summary extraction time. All situation event payloads include a `situation_display` key alongside the raw `situation` key. The EventCard component replaced its generic `formatPayload()` function with a `describeEvent()` switch that produces a clean human-readable description per event type (e.g. `"War of the Roses — ENG vs YOR"`, `"Fall of Delhi began"`, `"France: Charles VII → Louis XI"`). The previously incorrect `great_power_shift` event type name was corrected to `great_power_rank_changed` throughout the frontend.
+**Rationale:** The raw key-value dump in the original EventCard was unreadable in practice — war IDs, internal key names, and participant arrays were all exposed. Display names should be resolved once at parse time and stored in the payload, not computed in the UI.
+**Detail:** See `backend/parser/eu5/summary.py` (`SituationStatus`), `backend/parser/eu5/events.py` (`_diff_situations`), `frontend/src/components/EventCard.jsx`.
+
 ---
 
 ## Build Phases
@@ -163,8 +187,11 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 | 3 | File watcher + SQLite storage | ✅ Complete |
 | 4 | FastAPI backend + WebSocket | ✅ Complete |
 | 5 | React dashboard — stats, charts, event log | ✅ Complete |
-| 6 | AAR event notes, config persistence | ✅ Complete |
-| 7 | Second game (TBD) | ⏳ Next |
+| 6 | AAR event notes, config persistence, browse mode | ✅ Complete |
+| 7 | Entity tables — religions, wars, geography, demographics | ✅ Complete |
+| 8 | Entity frontend tabs — Religions, Wars, Territory, Demographics | ✅ Complete |
+| 9 | Event system rework — dedup, country filter, localisation | ✅ Complete |
+| 10 | Second game (TBD) | ⏳ Next |
 
 ---
 

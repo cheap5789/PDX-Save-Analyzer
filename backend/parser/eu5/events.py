@@ -9,18 +9,50 @@ Event types detected:
     Global:
         age_transition          — current_age changed
         situation_started       — a situation went from inactive → active/during
-        situation_ended         — a situation went from active → after
+        situation_ended         — a situation went from active/during → after
+        situation_changed       — any other status transition for a situation
     Country:
         ruler_changed           — player ruler name changed (AI rulers: future work)
         culture_changed         — primary_culture changed
         religion_changed        — primary_religion changed
-        great_power_rank_changed — significant rank change (configurable threshold)
+        great_power_rank_changed — country enters or leaves the top-8 great powers
         capital_moved           — capital location ID changed
         country_appeared        — a country exists now that didn't before
         country_annexed         — a country that existed before is now gone
     War:
         war_started             — new war ID appeared
         war_ended               — war ID disappeared
+
+GameEvent fields:
+    event_type   — one of the event type strings above
+    game_date    — in-game date string when the event was detected
+    payload      — event-specific dict; always contains localised display names
+                   alongside raw keys (e.g. situation_display, name_key, etc.)
+    dedup_key    — stable unique string for one-time events (e.g. "war_start:42",
+                   "sit_start:fall_of_delhi").  NULL for repeatable events.
+                   Enforced as UNIQUE in the DB via a partial index — duplicate
+                   inserts are silently dropped by INSERT OR IGNORE.
+    country_tag  — TAG of the primary country for single-country events; NULL
+                   for global and war events (wars carry participant lists in
+                   payload.participants instead).
+
+Payload keys by event type:
+    age_transition:          from_age, from_age_display, to_age, to_age_display
+    situation_started/ended: situation, situation_display, status/previous_status,
+                             start_date/end_date
+    situation_changed:       situation, situation_display, from_status, to_status
+    ruler_changed:           tag, country, from_ruler, to_ruler
+    culture_changed:         tag, country, from_culture, from_culture_key,
+                             to_culture, to_culture_key
+    religion_changed:        tag, country, from_religion, from_religion_key,
+                             to_religion, to_religion_key
+    great_power_rank_changed: tag, country, from_rank, to_rank
+                             (only emitted when country crosses top-8 boundary)
+    capital_moved:           tag, country, from_capital, to_capital
+    country_appeared/annexed: tag, country
+    war_started:             war_id, name, name_key, attackers, defenders,
+                             participants (combined unique list)
+    war_ended:               war_id, name, name_key, participants
 """
 
 from __future__ import annotations
@@ -37,6 +69,8 @@ class GameEvent:
     event_type: str          # one of the types listed above
     game_date: str           # in-game date when detected (from the new save)
     payload: dict[str, Any]  # event-specific data
+    dedup_key: str | None = None  # unique key for one-time events (prevents re-recording on restart)
+    country_tag: str | None = None  # primary country tag for single-country events (None = global/war)
 
     def __repr__(self) -> str:
         return f"GameEvent({self.event_type!r}, {self.game_date}, {self.payload})"
@@ -46,8 +80,10 @@ class GameEvent:
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Rank change must be at least this big to generate an event (avoids noise)
-RANK_CHANGE_THRESHOLD = 10
+# Only emit great_power_rank_changed when a country crosses this boundary
+# (i.e. enters rank ≤ GP_TOP_N or falls out of it).  Rank shuffles that stay
+# entirely inside or entirely outside the top-N are not tracked.
+GP_TOP_N = 8
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +93,6 @@ RANK_CHANGE_THRESHOLD = 10
 def diff_summaries(
     old: GameSummary | None,
     new: GameSummary,
-    rank_threshold: int = RANK_CHANGE_THRESHOLD,
 ) -> list[GameEvent]:
     """
     Compare two summaries and return a list of events.
@@ -66,9 +101,8 @@ def diff_summaries(
     are emitted (e.g. initial war list).
 
     Args:
-        old:             Previous summary (or None for first parse).
-        new:             Current summary.
-        rank_threshold:  Minimum rank change to emit rank_changed event.
+        old:  Previous summary (or None for first parse).
+        new:  Current summary.
 
     Returns:
         List of GameEvent, in no particular order.
@@ -86,7 +120,7 @@ def diff_summaries(
     _diff_situations(old, new, date, events)
 
     # --- Country events ---
-    _diff_countries(old, new, date, events, rank_threshold)
+    _diff_countries(old, new, date, events)
 
     # --- War events ---
     _diff_wars(old, new, date, events)
@@ -111,6 +145,7 @@ def _diff_age(
                 "from_age_display": old.current_age_display or old.current_age,
                 "to_age_display": new.current_age_display or new.current_age,
             },
+            dedup_key=f"age:{new.current_age}",
         ))
 
 
@@ -128,6 +163,13 @@ def _diff_situations(
         if old_status == new_status:
             continue
 
+        # Resolve the best available display name for this situation
+        sit_display = (
+            (new_sit.display if new_sit and new_sit.display else None)
+            or (old_sit.display if old_sit and old_sit.display else None)
+            or key
+        )
+
         # Situation started (inactive → anything active)
         if old_status == "inactive" and new_status != "inactive":
             events.append(GameEvent(
@@ -135,9 +177,11 @@ def _diff_situations(
                 game_date=date,
                 payload={
                     "situation": key,
+                    "situation_display": sit_display,
                     "status": new_status,
                     "start_date": new_sit.start_date if new_sit else None,
                 },
+                dedup_key=f"sit_start:{key}",
             ))
         # Situation ended (active/during → after)
         elif new_status == "after" and old_status not in ("after", "inactive"):
@@ -146,9 +190,11 @@ def _diff_situations(
                 game_date=date,
                 payload={
                     "situation": key,
+                    "situation_display": sit_display,
                     "previous_status": old_status,
                     "end_date": new_sit.end_date if new_sit else None,
                 },
+                dedup_key=f"sit_end:{key}",
             ))
         # Any other status change
         elif old_status != new_status:
@@ -157,6 +203,7 @@ def _diff_situations(
                 game_date=date,
                 payload={
                     "situation": key,
+                    "situation_display": sit_display,
                     "from_status": old_status,
                     "to_status": new_status,
                 },
@@ -168,7 +215,6 @@ def _diff_countries(
     new: GameSummary,
     date: str,
     events: list[GameEvent],
-    rank_threshold: int,
 ) -> None:
     all_tags = set(old.countries) | set(new.countries)
 
@@ -182,6 +228,7 @@ def _diff_countries(
                 event_type="country_appeared",
                 game_date=date,
                 payload={"tag": tag, "country": new_c.country_display or tag},
+                country_tag=tag,
             ))
             continue
 
@@ -191,6 +238,7 @@ def _diff_countries(
                 event_type="country_annexed",
                 game_date=date,
                 payload={"tag": tag, "country": old_c.country_display or tag},
+                country_tag=tag,
             ))
             continue
 
@@ -208,6 +256,7 @@ def _diff_countries(
                     "from_ruler": old_c.ruler_name,
                     "to_ruler": new_c.ruler_name,
                 },
+                country_tag=tag,
             ))
 
         # Culture change
@@ -218,11 +267,12 @@ def _diff_countries(
                 payload={
                     "tag": tag,
                     "country": new_c.country_display or tag,
-                    "from_culture": new_c.culture_display if old_c.primary_culture != new_c.primary_culture else old_c.culture_display,
+                    "from_culture": old_c.culture_display or old_c.primary_culture,
                     "to_culture": new_c.culture_display or new_c.primary_culture,
                     "from_culture_key": old_c.primary_culture,
                     "to_culture_key": new_c.primary_culture,
                 },
+                country_tag=tag,
             ))
 
         # Religion change
@@ -238,21 +288,27 @@ def _diff_countries(
                     "from_religion_key": old_c.primary_religion,
                     "to_religion_key": new_c.primary_religion,
                 },
+                country_tag=tag,
             ))
 
-        # Rank change
-        rank_delta = old_c.great_power_rank - new_c.great_power_rank  # positive = improved
-        if abs(rank_delta) >= rank_threshold:
+        # Rank change — only emit when a country crosses the top-8 boundary
+        # (enters or leaves the great-power top tier).  Shuffles within or
+        # outside the top tier are not tracked.
+        old_rank = old_c.great_power_rank
+        new_rank = new_c.great_power_rank
+        old_in_top = 0 < old_rank <= GP_TOP_N
+        new_in_top = 0 < new_rank <= GP_TOP_N
+        if old_in_top != new_in_top:
             events.append(GameEvent(
                 event_type="great_power_rank_changed",
                 game_date=date,
                 payload={
                     "tag": tag,
                     "country": new_c.country_display or tag,
-                    "from_rank": old_c.great_power_rank,
-                    "to_rank": new_c.great_power_rank,
-                    "delta": rank_delta,
+                    "from_rank": old_rank,
+                    "to_rank": new_rank,
                 },
+                country_tag=tag,
             ))
 
         # Capital moved
@@ -266,6 +322,7 @@ def _diff_countries(
                     "from_capital": old_c.capital,
                     "to_capital": new_c.capital,
                 },
+                country_tag=tag,
             ))
 
 
@@ -278,6 +335,15 @@ def _diff_wars(
     # New wars
     for wid in new_ids - old_ids:
         war = new.wars[wid]
+        attackers = war.attackers or []
+        defenders = war.defenders or []
+        # Combined participant list (unique tags, order: attackers first)
+        seen: set[str] = set()
+        participants: list[str] = []
+        for tag in attackers + defenders:
+            if tag and tag not in seen:
+                participants.append(tag)
+                seen.add(tag)
         events.append(GameEvent(
             event_type="war_started",
             game_date=date,
@@ -285,14 +351,24 @@ def _diff_wars(
                 "war_id": wid,
                 "name": war.name_display or war.name,
                 "name_key": war.name,
-                "attackers": war.attackers,
-                "defenders": war.defenders,
+                "attackers": attackers,
+                "defenders": defenders,
+                "participants": participants,
             },
+            dedup_key=f"war_start:{wid}",
         ))
 
     # Ended wars
     for wid in old_ids - new_ids:
         war = old.wars[wid]
+        attackers = war.attackers or []
+        defenders = war.defenders or []
+        seen = set()
+        participants = []
+        for tag in attackers + defenders:
+            if tag and tag not in seen:
+                participants.append(tag)
+                seen.add(tag)
         events.append(GameEvent(
             event_type="war_ended",
             game_date=date,
@@ -300,5 +376,7 @@ def _diff_wars(
                 "war_id": wid,
                 "name": war.name_display or war.name,
                 "name_key": war.name,
+                "participants": participants,
             },
+            dedup_key=f"war_end:{wid}",
         ))

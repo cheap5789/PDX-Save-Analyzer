@@ -8,6 +8,7 @@ Endpoints:
     GET  /api/playthroughs                  List all playthroughs
     GET  /api/snapshots/{id}                Snapshots for a playthrough
     GET  /api/events/{id}                   Events for a playthrough
+    GET  /api/events/{id}/country-tags      Distinct country tags in events
     GET  /api/fields                        Available field catalog
     GET  /api/religions/{id}                Religion statics for a playthrough
     GET  /api/religions/{id}/snapshots      Religion dynamic data over time
@@ -308,16 +309,35 @@ async def get_snapshots(
 async def get_events(
     playthrough_id: str,
     event_type: str | None = Query(None, description="Filter by event type"),
+    country_tag: list[str] | None = Query(None, description="Filter by country tag(s) — repeatable"),
+    include_global: bool = Query(True, description="When filtering by country, also include global events (NULL-tagged)"),
     limit: int = Query(0, ge=0, description="Max results (0=all)"),
 ) -> list[EventResponse]:
     db = await _get_db()
-    rows = await db.get_events(playthrough_id, event_type=event_type, limit=limit)
+    rows = await db.get_events(
+        playthrough_id,
+        event_type=event_type,
+        country_tags=country_tag or None,
+        include_global=include_global,
+        limit=limit,
+    )
     result = []
     for r in rows:
         d = dict(r)
         d["payload"] = json.loads(d["payload"]) if isinstance(d.get("payload"), str) else d.get("payload")
         result.append(EventResponse(**d))
     return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/events/{playthrough_id}/country-tags
+# ---------------------------------------------------------------------------
+
+@router.get("/api/events/{playthrough_id}/country-tags", response_model=list[str])
+async def get_event_country_tags(playthrough_id: str) -> list[str]:
+    """Return sorted list of distinct country tags present in events for this playthrough."""
+    db = await _get_db()
+    return await db.get_event_country_tags(playthrough_id)
 
 
 # ---------------------------------------------------------------------------
