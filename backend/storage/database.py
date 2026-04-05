@@ -224,6 +224,33 @@ CREATE TABLE IF NOT EXISTS province_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_prov_snap
     ON province_snapshots(playthrough_id, snapshot_id);
+
+-- ── Demographics entity table ──────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS pop_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    game_date       TEXT NOT NULL,
+    location_id     INTEGER NOT NULL,
+    pop_id          INTEGER NOT NULL,           -- key in population.database
+    type            TEXT NOT NULL,               -- nobles, clergy, burghers, peasants, laborers, soldiers, tribesmen, slaves
+    estate          TEXT,                        -- nobles_estate, clergy_estate, etc.
+    culture_id      INTEGER,
+    religion_id     INTEGER,
+    size            REAL,                        -- population mass scalar
+    status          TEXT,                        -- Primary, Accepted, Tolerated, or NULL
+    satisfaction    REAL,                        -- 0-1 (slaves always 0)
+    intervention_satisfaction REAL,              -- nullable; government policy modifier
+    literacy        REAL,                        -- 0-100 percentage
+    owner_id        INTEGER                     -- nullable; controlling country when != location owner
+);
+CREATE INDEX IF NOT EXISTS idx_pop_snap_pt
+    ON pop_snapshots(playthrough_id, snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_pop_snap_loc
+    ON pop_snapshots(playthrough_id, location_id, game_date);
+CREATE INDEX IF NOT EXISTS idx_pop_snap_type
+    ON pop_snapshots(playthrough_id, type, game_date);
 """
 
 
@@ -920,5 +947,129 @@ class Database:
             query += " AND snapshot_id = ?"
             params.append(snapshot_id)
         query += " ORDER BY game_date ASC, province_id ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Pop Snapshots (Demographics)
+    # ------------------------------------------------------------------
+
+    async def insert_pop_snapshots(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        game_date: str,
+        rows: list[dict],
+    ) -> int:
+        """Bulk-insert pop snapshot rows (~107k per snapshot)."""
+        if not rows:
+            return 0
+        data = [
+            (playthrough_id, snapshot_id, game_date,
+             r["location_id"], r["pop_id"], r["type"],
+             r.get("estate"), r.get("culture_id"), r.get("religion_id"),
+             r.get("size"), r.get("status"),
+             r.get("satisfaction"), r.get("intervention_satisfaction"),
+             r.get("literacy"), r.get("owner_id"))
+            for r in rows
+        ]
+        await self.conn.executemany(
+            """INSERT INTO pop_snapshots
+               (playthrough_id, snapshot_id, game_date,
+                location_id, pop_id, type,
+                estate, culture_id, religion_id,
+                size, status,
+                satisfaction, intervention_satisfaction,
+                literacy, owner_id)
+               VALUES (?,?,?, ?,?,?, ?,?,?, ?,?, ?,?, ?,?)""",
+            data,
+        )
+        return len(data)
+
+    async def get_pop_snapshots(
+        self,
+        playthrough_id: str,
+        location_id: int | None = None,
+        snapshot_id: int | None = None,
+        pop_type: str | None = None,
+        owner_id: int | None = None,
+    ) -> list[dict]:
+        """Get pop snapshots with optional filters.
+
+        WARNING: Unfiltered queries return ~107k rows per snapshot.
+        Always pass at least one filter.
+        """
+        query = "SELECT * FROM pop_snapshots WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if location_id is not None:
+            query += " AND location_id = ?"
+            params.append(location_id)
+        if snapshot_id is not None:
+            query += " AND snapshot_id = ?"
+            params.append(snapshot_id)
+        if pop_type is not None:
+            query += " AND type = ?"
+            params.append(pop_type)
+        if owner_id is not None:
+            query += " AND owner_id = ?"
+            params.append(owner_id)
+        query += " ORDER BY game_date ASC, location_id ASC, pop_id ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_pop_aggregates(
+        self,
+        playthrough_id: str,
+        snapshot_id: int | None = None,
+        owner_id: int | None = None,
+        group_by: str = "type",
+    ) -> list[dict]:
+        """Get aggregated pop data (SUM(size), AVG(satisfaction), AVG(literacy)).
+
+        group_by: "type", "culture_id", "religion_id", "status", "location_id"
+        """
+        valid_groups = {"type", "culture_id", "religion_id", "status", "location_id", "estate"}
+        if group_by not in valid_groups:
+            group_by = "type"
+
+        query = f"""
+            SELECT {group_by},
+                   game_date,
+                   COUNT(*) as pop_count,
+                   SUM(size) as total_size,
+                   AVG(satisfaction) as avg_satisfaction,
+                   AVG(literacy) as avg_literacy
+            FROM pop_snapshots
+            WHERE playthrough_id = ?
+        """
+        params: list[Any] = [playthrough_id]
+        if snapshot_id is not None:
+            query += " AND snapshot_id = ?"
+            params.append(snapshot_id)
+        if owner_id is not None:
+            # Join via location_snapshots to get pops for a specific country
+            query = f"""
+                SELECT ps.{group_by},
+                       ps.game_date,
+                       COUNT(*) as pop_count,
+                       SUM(ps.size) as total_size,
+                       AVG(ps.satisfaction) as avg_satisfaction,
+                       AVG(ps.literacy) as avg_literacy
+                FROM pop_snapshots ps
+                JOIN location_snapshots ls
+                    ON ps.playthrough_id = ls.playthrough_id
+                    AND ps.snapshot_id = ls.snapshot_id
+                    AND ps.location_id = ls.location_id
+                WHERE ps.playthrough_id = ?
+                    AND ls.owner_id = ?
+            """
+            params = [playthrough_id, owner_id]
+            if snapshot_id is not None:
+                query += " AND ps.snapshot_id = ?"
+                params.append(snapshot_id)
+            query += f" GROUP BY ps.{group_by}, ps.game_date ORDER BY ps.game_date ASC"
+        else:
+            query += f" GROUP BY {group_by}, game_date ORDER BY game_date ASC"
+
         cursor = await self.conn.execute(query, params)
         return [dict(r) for r in await cursor.fetchall()]

@@ -18,6 +18,8 @@ Endpoints:
     GET  /api/locations/{id}/snapshots      Location snapshot data (filterable)
     GET  /api/provinces/{id}                Province statics for a playthrough
     GET  /api/provinces/{id}/snapshots      Province food economy over time
+    GET  /api/pops/{id}/snapshots           Individual pop data (filtered)
+    GET  /api/pops/{id}/aggregates          Aggregated pop demographics
     PATCH /api/events/{id}/note             Set AAR note on an event
     WS   /ws                                Live push (snapshots + events)
 """
@@ -40,6 +42,7 @@ from backend.api.schemas import (
     WarResponse, WarSnapshotResponse, WarParticipantResponse,
     LocationResponse, LocationSnapshotResponse,
     ProvinceResponse, ProvinceSnapshotResponse,
+    PopSnapshotResponse, PopAggregateResponse,
 )
 from backend.config import SessionConfig
 from backend.parser.eu5.field_catalog import FIELD_CATALOG
@@ -538,6 +541,64 @@ async def get_province_snapshots(
                 pass
         result.append(ProvinceSnapshotResponse(**d))
     return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/pops/{playthrough_id}/snapshots
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/pops/{playthrough_id}/snapshots",
+    response_model=list[PopSnapshotResponse],
+)
+async def get_pop_snapshots(
+    playthrough_id: str,
+    location_id: int | None = Query(None, description="Filter by location ID (strongly recommended)"),
+    snapshot_id: int | None = Query(None, description="Filter by snapshot ID"),
+    pop_type: str | None = Query(None, description="Filter by pop type (nobles, clergy, etc.)"),
+    owner_id: int | None = Query(None, description="Filter by pop owner country ID"),
+    limit: int = Query(1000, ge=1, le=50000, description="Max results (default 1000)"),
+) -> list[PopSnapshotResponse]:
+    """Individual pop data. Use filters — unfiltered returns ~107k rows per snapshot.
+
+    Recommended: filter by location_id and/or snapshot_id.
+    """
+    db = await _get_db()
+    rows = await db.get_pop_snapshots(
+        playthrough_id,
+        location_id=location_id,
+        snapshot_id=snapshot_id,
+        pop_type=pop_type,
+        owner_id=owner_id,
+    )
+    if limit and len(rows) > limit:
+        rows = rows[:limit]
+    return [PopSnapshotResponse(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/pops/{playthrough_id}/aggregates
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/pops/{playthrough_id}/aggregates",
+    response_model=list[PopAggregateResponse],
+)
+async def get_pop_aggregates(
+    playthrough_id: str,
+    group_by: str = Query("type", description="Group by: type, culture_id, religion_id, status, location_id, estate"),
+    snapshot_id: int | None = Query(None, description="Filter by snapshot ID"),
+    owner_id: int | None = Query(None, description="Filter by owning country ID (joins via location_snapshots)"),
+) -> list[PopAggregateResponse]:
+    """Aggregated pop demographics (SUM size, AVG satisfaction/literacy) grouped by a dimension."""
+    db = await _get_db()
+    rows = await db.get_pop_aggregates(
+        playthrough_id,
+        snapshot_id=snapshot_id,
+        owner_id=owner_id,
+        group_by=group_by,
+    )
+    return [PopAggregateResponse(**dict(r)) for r in rows]
 
 
 # ---------------------------------------------------------------------------

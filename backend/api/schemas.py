@@ -252,6 +252,42 @@ class ProvinceSnapshotResponse(BaseModel):
     goods_produced: dict | None = None
 
 
+class PopSnapshotResponse(BaseModel):
+    """Individual pop snapshot row."""
+    id: int
+    playthrough_id: str
+    snapshot_id: int
+    game_date: str
+    location_id: int
+    pop_id: int
+    type: str
+    estate: str | None = None
+    culture_id: int | None = None
+    religion_id: int | None = None
+    size: float | None = None
+    status: str | None = None
+    satisfaction: float | None = None
+    intervention_satisfaction: float | None = None
+    literacy: float | None = None
+    owner_id: int | None = None
+
+
+class PopAggregateResponse(BaseModel):
+    """Aggregated pop data (grouped by type, culture, religion, etc.)."""
+    game_date: str
+    pop_count: int
+    total_size: float
+    avg_satisfaction: float | None = None
+    avg_literacy: float | None = None
+    # The group key — one of these will be populated depending on group_by
+    type: str | None = None
+    culture_id: int | None = None
+    religion_id: int | None = None
+    status: str | None = None
+    location_id: int | None = None
+    estate: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # WebSocket message types
 # ---------------------------------------------------------------------------

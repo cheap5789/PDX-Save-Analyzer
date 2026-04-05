@@ -40,6 +40,7 @@ from backend.parser.eu5.geography import (
     extract_province_statics, extract_province_snapshot_rows,
     detect_location_events,
 )
+from backend.parser.eu5.demographics import extract_pop_snapshot_rows
 from backend.parser.eu5.game_date import should_snapshot
 from backend.storage.database import Database
 from backend.watcher.file_watcher import SaveFileWatcher
@@ -339,6 +340,16 @@ class WatcherPipeline:
                 )
             except Exception:
                 logger.exception("Error in geography extraction")
+
+            # Step 9: Demographics — per-pop data
+            try:
+                pop_rows = extract_pop_snapshot_rows(save)
+                pop_count = await self._db.insert_pop_snapshots(
+                    pt_id, snap_id, save.game_date, pop_rows,
+                )
+                logger.info(f"  Demographics: {pop_count} pop snapshot rows")
+            except Exception:
+                logger.exception("Error in demographics extraction")
         else:
             logger.info(f"  Skipped snapshot (freq={self.config.snapshot_freq}, date={save.game_date})")
 
