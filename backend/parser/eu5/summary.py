@@ -96,7 +96,7 @@ def extract_summary(
         tracked_tags:  Which country TAGs to include in the summary.
                        None = all Real countries.
     """
-    from backend.parser.localisation import display_name as _dn
+    from backend.parser.localisation import display_name as _dn, resolve_war_name as _rwn
     has_loc = bool(save.loc)
 
     # --- Countries ---
@@ -145,17 +145,16 @@ def extract_summary(
     for wid, wdata in war_db.items():
         if not isinstance(wdata, dict):
             continue
-        # War name lives in wdata["war_name"], which is a dict with a "name"
-        # key (the localisation key), not a plain string.  Mirror the logic
-        # in wars.py → extract_war_statics so both paths produce the same key.
+        # War name lives in wdata["war_name"] — a structured template object.
+        # Use resolve_war_name() so both summary and wars.py produce identical
+        # display names (template expansion + country adjective substitution).
         war_name_raw = wdata.get("war_name", {})
         if isinstance(war_name_raw, dict):
             name = war_name_raw.get("name", f"war_{wid}")
+            name_display = _rwn(war_name_raw, save.loc) if has_loc else name
         else:
             name = str(war_name_raw) if war_name_raw else f"war_{wid}"
-
-        # Localise war name: try the raw key against loc data
-        name_display = _dn(save.loc, name) if has_loc else name
+            name_display = _dn(save.loc, name) if has_loc else name
 
         attackers: list[str] = []
         defenders: list[str] = []

@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { useCountryNames } from '../contexts/CountryNamesContext'
+import { fmtCountry } from '../utils/formatters'
 
 /**
  * CountryPicker — checkbox list of country tags.
@@ -10,10 +12,15 @@ import { useState } from 'react'
  */
 export default function CountryPicker({ available = [], selected = [], onChange, maxSelect = 8 }) {
   const [search, setSearch] = useState('')
+  const nameMap = useCountryNames()
 
-  const filtered = available.filter((tag) =>
-    tag.toLowerCase().includes(search.toLowerCase())
-  )
+  const filtered = available.filter((tag) => {
+    const q = search.toLowerCase()
+    return (
+      tag.toLowerCase().includes(q) ||
+      (nameMap[tag] || '').toLowerCase().includes(q)
+    )
+  })
 
   const toggle = (tag) => {
     if (selected.includes(tag)) {
@@ -58,7 +65,7 @@ export default function CountryPicker({ available = [], selected = [], onChange,
                 border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
               }}
             >
-              {tag}
+              {fmtCountry(tag, nameMap)}
             </button>
           )
         })}

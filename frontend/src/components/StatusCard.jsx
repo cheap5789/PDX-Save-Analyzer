@@ -10,7 +10,14 @@ export default function StatusCard({ status }) {
   const running = status.running
   const items = [
     { label: 'Game', value: status.game || '—' },
-    { label: 'Country', value: status.country_name || status.country_tag || '—' },
+    {
+      label: 'Country',
+      value: status.country_tag
+        ? (status.country_name && status.country_name !== status.country_tag
+            ? `${status.country_name} (${status.country_tag})`
+            : status.country_tag)
+        : '—',
+    },
     { label: 'Game Date', value: status.game_date || '—' },
     { label: 'Frequency', value: status.snapshot_freq || '—' },
     { label: 'Snapshots', value: status.snapshot_count ?? '—' },

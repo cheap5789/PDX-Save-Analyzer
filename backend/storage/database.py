@@ -79,7 +79,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
     playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
     game_date       TEXT NOT NULL,      -- in-game date e.g. "1482.1.1"
     recorded_at     TEXT NOT NULL,      -- wall-clock ISO timestamp
-    data            TEXT NOT NULL       -- JSON blob of extracted country stats
+    data            TEXT NOT NULL,      -- JSON blob of extracted country stats
+    UNIQUE(playthrough_id, game_date)   -- one snapshot per date per campaign
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_playthrough
     ON snapshots(playthrough_id, game_date);
@@ -335,11 +336,54 @@ class Database:
         """
         Idempotent schema migrations.
 
-        Adds dedup_key and country_tag columns to the events table if they don't
-        exist yet (upgrade from schema before event-system rework).  When new
-        columns are added the existing event rows are cleared because they lack
-        dedup_key data and would bypass the unique-index deduplication.
+        Migration 1 — snapshot deduplication (unique constraint):
+          Existing snapshots tables have no UNIQUE(playthrough_id, game_date)
+          constraint.  We can't ADD CONSTRAINT via SQLite ALTER TABLE, so we
+          rebuild the table if the unique index doesn't exist yet.
+
+        Migration 2 — events columns (dedup_key, country_tag):
+          Adds dedup_key and country_tag columns if absent, and creates the
+          supporting indexes.
         """
+        # --- Migration 1: ensure snapshots unique constraint exists ---
+        cursor = await self.conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND name='idx_snapshots_unique_date'"
+        )
+        if not await cursor.fetchone():
+            # Rebuild snapshots table with the UNIQUE constraint.
+            # We rename the old table, create the new one, copy data, drop old.
+            await self.conn.executescript("""
+                ALTER TABLE snapshots RENAME TO snapshots_old;
+
+                CREATE TABLE snapshots (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+                    game_date       TEXT NOT NULL,
+                    recorded_at     TEXT NOT NULL,
+                    data            TEXT NOT NULL,
+                    UNIQUE(playthrough_id, game_date)
+                );
+
+                INSERT OR IGNORE INTO snapshots
+                    SELECT id, playthrough_id, game_date, recorded_at, data
+                    FROM snapshots_old
+                    ORDER BY id ASC;
+
+                DROP TABLE snapshots_old;
+            """)
+            await self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_snapshots_playthrough "
+                "ON snapshots(playthrough_id, game_date)"
+            )
+            await self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_unique_date "
+                "ON snapshots(playthrough_id, game_date)"
+            )
+            await self.conn.commit()
+            logger.info("DB migration: added UNIQUE constraint to snapshots(playthrough_id, game_date)")
+
+        # --- Migration 2: events dedup_key / country_tag columns ---
         cursor = await self.conn.execute("PRAGMA table_info(events)")
         cols = {row[1] for row in await cursor.fetchall()}
 
@@ -493,22 +537,35 @@ class Database:
     # Snapshots
     # ------------------------------------------------------------------
 
+    async def snapshot_exists(self, playthrough_id: str, game_date: str) -> bool:
+        """Return True if a snapshot for this playthrough+date is already stored."""
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM snapshots WHERE playthrough_id = ? AND game_date = ? LIMIT 1",
+            (playthrough_id, game_date),
+        )
+        return await cursor.fetchone() is not None
+
     async def insert_snapshot(
         self,
         playthrough_id: str,
         game_date: str,
         data: dict,
-    ) -> int:
+    ) -> int | None:
         """
         Insert a snapshot and update the playthrough's last_seen_at / last_game_date.
-        Returns the new snapshot ID.
+
+        Returns the new snapshot ID, or None if a snapshot for this
+        (playthrough_id, game_date) pair already exists (silently skipped).
         """
         now = _now_iso()
         cursor = await self.conn.execute(
-            """INSERT INTO snapshots (playthrough_id, game_date, recorded_at, data)
+            """INSERT OR IGNORE INTO snapshots (playthrough_id, game_date, recorded_at, data)
                VALUES (?, ?, ?, ?)""",
             (playthrough_id, game_date, now, json.dumps(data)),
         )
+        if cursor.lastrowid == 0:
+            # IGNORE fired — a snapshot for this date already exists
+            return None
         # Update playthrough timestamps
         await self.conn.execute(
             "UPDATE playthroughs SET last_seen_at = ?, last_game_date = ? WHERE id = ?",

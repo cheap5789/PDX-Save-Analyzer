@@ -104,6 +104,7 @@ class FieldDefResponse(BaseModel):
     value_type: str
     default_enabled: bool
     description: str = ""
+    display_format: str = ""  # "x1000", "percent", or "" (plain)
 
 
 class ReligionResponse(BaseModel):

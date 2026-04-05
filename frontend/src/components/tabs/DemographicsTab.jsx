@@ -76,7 +76,7 @@ export default function DemographicsTab({ status }) {
       const groupVal = String(a[groupBy] ?? 'Unknown')
       const d = a.game_date
       if (byDate[d]) {
-        byDate[d][groupVal] = a.total_size
+        byDate[d][groupVal] = (a.total_size || 0) * 1000
       }
     })
 
@@ -91,7 +91,7 @@ export default function DemographicsTab({ status }) {
       .filter((a) => a.game_date === lastDate)
       .map((a) => ({
         name: String(a[groupBy] ?? 'Unknown'),
-        value: a.total_size,
+        value: (a.total_size || 0) * 1000,
         count: a.pop_count,
         avgSat: a.avg_satisfaction,
         avgLit: a.avg_literacy,
@@ -210,12 +210,21 @@ export default function DemographicsTab({ status }) {
               <AreaChart data={trendData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                 <XAxis dataKey="date" tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }} stroke="var(--color-border)" />
-                <YAxis tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }} stroke="var(--color-border)" />
+                <YAxis
+                  tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }}
+                  stroke="var(--color-border)"
+                  tickFormatter={(v) => {
+                    if (v >= 1_000_000) return (v / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
+                    if (v >= 1_000) return (v / 1_000).toFixed(1).replace(/\.0$/, '') + 'K'
+                    return Math.round(v).toString()
+                  }}
+                />
                 <Tooltip
                   contentStyle={{
                     background: 'var(--color-surface-alt)', border: '1px solid var(--color-border)',
                     borderRadius: '6px', color: 'var(--color-text)', fontSize: '12px',
                   }}
+                  formatter={(v, name) => [v.toLocaleString(undefined, { maximumFractionDigits: 0 }), name]}
                 />
                 <Legend wrapperStyle={{ fontSize: '12px', color: 'var(--color-text-muted)' }} />
                 {groups.map((g, i) => (
@@ -304,7 +313,7 @@ export default function DemographicsTab({ status }) {
                     background: 'var(--color-surface-alt)', border: '1px solid var(--color-border)',
                     borderRadius: '6px', color: 'var(--color-text)', fontSize: '12px',
                   }}
-                  formatter={(val) => val.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                  formatter={(val) => val.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -332,7 +341,7 @@ export default function DemographicsTab({ status }) {
                         {row.name}
                       </td>
                       <td className="px-3 py-1.5 text-right">{row.count.toLocaleString()}</td>
-                      <td className="px-3 py-1.5 text-right">{row.value.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                      <td className="px-3 py-1.5 text-right">{row.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                       <td className="px-3 py-1.5 text-right">
                         {row.avgSat != null ? (row.avgSat * 100).toFixed(1) + '%' : '—'}
                       </td>

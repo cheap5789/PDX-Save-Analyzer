@@ -359,6 +359,7 @@ async def get_fields(
             value_type=f.value_type,
             default_enabled=f.default_enabled,
             description=f.description,
+            display_format=f.display_format,
         )
         for f in fields
     ]

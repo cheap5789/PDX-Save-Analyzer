@@ -2,7 +2,7 @@
   "game": "eu5",
   "game_install_path": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Europa Universalis V",
   "save_directory": "C:\\Users\\PH\\Documents\\Paradox Interactive\\Europa Universalis V\\save games",
-  "snapshot_freq": "every_save",
+  "snapshot_freq": "yearly",
   "language": "english",
   "enabled_field_keys": [
     "gold",
@@ -129,5 +129,5 @@
     "counter_works_of_art",
     "counter_cabinet_card_modifier"
   ],
-  "selected_playthrough_id": ""
+  "selected_playthrough_id": "c832299a-d810-47d8-a21a-3e5e710c98d9"
 }

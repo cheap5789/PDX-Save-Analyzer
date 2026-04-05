@@ -1,5 +1,7 @@
 import StatusCard from '../StatusCard'
 import EventCard from '../EventCard'
+import { useCountryNames } from '../../contexts/CountryNamesContext'
+import { fmtCountry } from '../../utils/formatters'
 
 export default function OverviewTab({ status, snapshots, events }) {
   // Latest snapshot: last item in the array
@@ -49,6 +51,7 @@ export default function OverviewTab({ status, snapshots, events }) {
 function SnapshotSummary({ snapshot }) {
   const countries = snapshot.countries || {}
   const tags = Object.keys(countries)
+  const nameMap = useCountryNames()
 
   return (
     <div className="rounded-lg p-4 space-y-3" style={{ background: 'var(--color-surface)' }}>
@@ -71,12 +74,15 @@ function SnapshotSummary({ snapshot }) {
       {tags.slice(0, 3).map((tag) => {
         const data = countries[tag]
         const preview = Object.entries(data || {})
+          .filter(([k]) => !k.startsWith('_'))
           .slice(0, 4)
           .map(([k, v]) => `${k}: ${typeof v === 'number' ? v.toFixed(1) : v}`)
           .join(' \u00B7 ')
         return (
           <div key={tag} className="text-xs">
-            <span className="font-medium" style={{ color: 'var(--color-accent)' }}>{tag}</span>
+            <span className="font-medium" style={{ color: 'var(--color-accent)' }}>
+              {fmtCountry(tag, nameMap)}
+            </span>
             <span style={{ color: 'var(--color-text-muted)' }}> {preview}</span>
           </div>
         )

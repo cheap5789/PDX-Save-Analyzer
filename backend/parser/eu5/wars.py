@@ -20,6 +20,7 @@ import json
 from typing import Any
 
 from backend.parser.save_loader import EU5Save
+from backend.parser.localisation import resolve_war_name
 
 
 def extract_war_statics(save: EU5Save) -> list[dict[str, Any]]:
@@ -36,15 +37,18 @@ def extract_war_statics(save: EU5Save) -> list[dict[str, Any]]:
         if not isinstance(wdata, dict):
             continue
 
-        # War name — complex object, extract the template key
+        # War name — structured template object in save; resolve via localisation
         war_name_raw = wdata.get("war_name", {})
-        if isinstance(war_name_raw, dict):
-            name_key = war_name_raw.get("name", f"war_{wid}")
-        else:
-            name_key = str(war_name_raw) if war_name_raw else f"war_{wid}"
-
-        # Try to localise
-        name_display = save.loc.get(name_key, name_key) if save.loc else name_key
+        name_key = (
+            war_name_raw.get("name", f"war_{wid}")
+            if isinstance(war_name_raw, dict)
+            else str(war_name_raw) if war_name_raw else f"war_{wid}"
+        )
+        name_display = (
+            resolve_war_name(war_name_raw, save.loc)
+            if isinstance(war_name_raw, dict) and save.loc
+            else name_key
+        )
 
         # Goal / casus belli
         goal = wdata.get("take_province", {})

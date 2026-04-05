@@ -3,6 +3,8 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 import { useApi } from '../../hooks/useApi'
+import { useCountryNames } from '../../contexts/CountryNamesContext'
+import { fmtCountry } from '../../utils/formatters'
 
 const SIDE_COLORS = { Attacker: '#ef4444', Defender: '#3b82f6' }
 
@@ -65,6 +67,8 @@ export default function WarsTab({ status }) {
   // Split participants by side
   const attackers = participants.filter((p) => p.side === 'Attacker')
   const defenders = participants.filter((p) => p.side === 'Defender')
+
+  const nameMap = useCountryNames()
 
   if (!ptId) {
     return (
@@ -176,7 +180,7 @@ export default function WarsTab({ status }) {
                     {attackers.map((p) => (
                       <div key={p.id} className="px-3 py-1.5 text-xs flex justify-between"
                         style={{ borderBottom: '1px solid var(--color-border)' }}>
-                        <span>{p.country_tag || `#${p.country_id}`}</span>
+                        <span>{p.country_tag ? fmtCountry(p.country_tag, nameMap) : `#${p.country_id}`}</span>
                         <span style={{ color: 'var(--color-text-muted)' }}>
                           {p.join_reason}{p.status !== 'Active' ? ` (${p.status})` : ''}
                         </span>
@@ -194,7 +198,7 @@ export default function WarsTab({ status }) {
                     {defenders.map((p) => (
                       <div key={p.id} className="px-3 py-1.5 text-xs flex justify-between"
                         style={{ borderBottom: '1px solid var(--color-border)' }}>
-                        <span>{p.country_tag || `#${p.country_id}`}</span>
+                        <span>{p.country_tag ? fmtCountry(p.country_tag, nameMap) : `#${p.country_id}`}</span>
                         <span style={{ color: 'var(--color-text-muted)' }}>
                           {p.join_reason}{p.status !== 'Active' ? ` (${p.status})` : ''}
                         </span>

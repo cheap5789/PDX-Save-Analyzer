@@ -93,6 +93,11 @@ def extract_snapshot(
             if val is not None:
                 row[field.key] = val
         if row:
+            # Embed localised country name so the frontend can display "Name (TAG)" format.
+            if save.loc:
+                name = save.country_display_name(tag)
+                if name and name != tag:
+                    row["_name"] = name
             countries[tag] = row
 
     return {

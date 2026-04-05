@@ -33,6 +33,10 @@ class FieldDef:
     category: str            # grouping: economy, military, diplomacy, score, demographics, religion, etc.
     default_enabled: bool    # whether it's on by default for new campaigns
     description: str = ""    # tooltip / help text
+    display_format: str = "" # formatting hint for the UI:
+                             #   "x1000"  — multiply raw value by 1000, show as integer with locale separators
+                             #   "percent" — value is already on a 0–100 (or −100–+100) scale, append %
+                             #   ""        — plain number (2 decimal places)
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +315,8 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
-        description="Current manpower (raw, ×1000 for display)",
+        description="Current manpower (raw save value; ×1000 = display value)",
+        display_format="x1000",
     ),
     FieldDef(
         key="manpower_monthly",
@@ -320,6 +325,7 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
+        display_format="x1000",
     ),
     FieldDef(
         key="max_manpower",
@@ -328,6 +334,7 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
+        display_format="x1000",
     ),
     FieldDef(
         key="monthly_manpower",
@@ -336,7 +343,8 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
-        description="Monthly manpower gain (raw, ×1000 for display)",
+        description="Monthly manpower gain (raw save value; ×1000 = display value)",
+        display_format="x1000",
     ),
     FieldDef(
         key="sailors",
@@ -345,7 +353,8 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
-        description="Current sailors (raw, ×1000 for display)",
+        description="Current sailors (raw save value; ×1000 = display value)",
+        display_format="x1000",
     ),
     FieldDef(
         key="sailors_monthly",
@@ -354,6 +363,7 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
+        display_format="x1000",
     ),
     FieldDef(
         key="max_sailors",
@@ -362,6 +372,7 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
+        display_format="x1000",
     ),
     FieldDef(
         key="monthly_sailors",
@@ -370,7 +381,8 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
-        description="Monthly sailor gain (raw, ×1000 for display)",
+        description="Monthly sailor gain (raw save value; ×1000 = display value)",
+        display_format="x1000",
     ),
     FieldDef(
         key="this_months_manpower_losses",
@@ -379,7 +391,8 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="military",
         default_enabled=True,
-        description="Losses this month (raw, ×1000 for display, negative = losses)",
+        description="Losses this month (raw save value; ×1000 = display value; negative = losses)",
+        display_format="x1000",
     ),
     FieldDef(
         key="army_tradition",
@@ -471,7 +484,8 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="stability",
         default_enabled=True,
-        description="−100 to +100 scale",
+        description="−100 to +100 scale (displayed as %)",
+        display_format="percent",
     ),
     FieldDef(
         key="stability_monthly",
@@ -951,7 +965,8 @@ FIELD_CATALOG: list[FieldDef] = [
         value_type="float",
         category="demographics",
         default_enabled=True,
-        description="Pop-mass unit (NOT headcount). ×1 for display.",
+        description="Pop-mass unit (raw save value; ×1000 = approximate headcount)",
+        display_format="x1000",
     ),
     FieldDef(
         key="pop_count",

@@ -4,6 +4,8 @@ import {
 } from 'recharts'
 import { useApi } from '../../hooks/useApi'
 import CountryPicker from '../CountryPicker'
+import { fmtValue, fmtAxisTick, fmtCountry } from '../../utils/formatters'
+import { useCountryNames } from '../../contexts/CountryNamesContext'
 
 // Distinct colors for up to 8 overlaid country lines
 const LINE_COLORS = [
@@ -73,6 +75,7 @@ export default function ChartsTab({ snapshots, status }) {
   }, [snapshots, selectedField, selectedCountries])
 
   const currentFieldDef = fields.find((f) => f.key === selectedField)
+  const nameMap = useCountryNames()
 
   return (
     <div className="p-6 space-y-4">
@@ -142,6 +145,7 @@ export default function ChartsTab({ snapshots, status }) {
               <YAxis
                 tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }}
                 stroke="var(--color-border)"
+                tickFormatter={(v) => fmtAxisTick(v, currentFieldDef?.display_format)}
               />
               <Tooltip
                 contentStyle={{
@@ -151,6 +155,7 @@ export default function ChartsTab({ snapshots, status }) {
                   color: 'var(--color-text)',
                   fontSize: '12px',
                 }}
+                formatter={(v, name) => [fmtValue(v, currentFieldDef?.display_format), name]}
               />
               <Legend
                 wrapperStyle={{ fontSize: '12px', color: 'var(--color-text-muted)' }}
@@ -160,6 +165,7 @@ export default function ChartsTab({ snapshots, status }) {
                   key={tag}
                   type="monotone"
                   dataKey={tag}
+                  name={fmtCountry(tag, nameMap)}
                   stroke={LINE_COLORS[i % LINE_COLORS.length]}
                   strokeWidth={2}
                   dot={false}

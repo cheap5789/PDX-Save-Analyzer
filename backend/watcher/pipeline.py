@@ -260,104 +260,116 @@ class WatcherPipeline:
             if self._on_events:
                 self._on_events(events)
 
-        # Step 4: Snapshot frequency check
+        # Step 4: Snapshot duplicate guard + frequency check.
+        # We check for an existing (playthrough, date) row first — the cheapest
+        # possible gate — so we never do any extraction work for a save we have
+        # already recorded.  The frequency threshold is evaluated second.
+        if await self._db.snapshot_exists(pt_id, save.game_date):
+            logger.info(f"  Skipped snapshot — already recorded for {save.game_date}")
+            return
+
         last_snap_date = await self._db.get_last_snapshot_date(pt_id)
-        if should_snapshot(save.game_date, last_snap_date, self.config.snapshot_freq):
-            # Step 5: Extract and store snapshot
-            snapshot_data = extract_snapshot(
-                save,
-                enabled_fields=self._enabled_fields,
-            )
-            snap_id = await self._db.insert_snapshot(pt_id, save.game_date, snapshot_data)
-            logger.info(f"  Snapshot #{snap_id} recorded at {save.game_date}")
-            if self._on_snapshot:
-                self._on_snapshot(snapshot_data)
-
-            # Step 6: Religion entity tracking
-            try:
-                rel_statics = extract_religion_statics(save)
-                for r in rel_statics:
-                    await self._db.upsert_religion(
-                        playthrough_id=pt_id,
-                        religion_id=r["religion_id"],
-                        definition=r["definition"],
-                        name=r.get("name", ""),
-                        religion_group=r.get("religion_group", ""),
-                        has_religious_head=r.get("has_religious_head", False),
-                        color_rgb=r.get("color_rgb"),
-                    )
-                rel_rows = extract_religion_snapshot_rows(save)
-                rel_count = await self._db.insert_religion_snapshots(
-                    pt_id, snap_id, save.game_date, rel_rows,
-                )
-                logger.info(f"  {len(rel_statics)} religions upserted, {rel_count} snapshot rows")
-            except Exception:
-                logger.exception("Error in religion extraction")
-
-            # Step 7: War entity tracking
-            try:
-                war_statics = extract_war_statics(save)
-                for w in war_statics:
-                    await self._db.upsert_war(pt_id, w)
-
-                war_snap_rows = extract_war_snapshot_rows(save)
-                war_snap_count = await self._db.insert_war_snapshots(
-                    pt_id, snap_id, save.game_date, war_snap_rows,
-                )
-
-                all_participants = extract_all_war_participants(save)
-                part_count = 0
-                for wid, parts in all_participants.items():
-                    part_count += await self._db.upsert_war_participants(
-                        pt_id, wid, parts,
-                    )
-
-                logger.info(
-                    f"  {len(war_statics)} wars upserted, "
-                    f"{war_snap_count} war snapshot rows, "
-                    f"{part_count} participants"
-                )
-            except Exception:
-                logger.exception("Error in war extraction")
-
-            # Step 8: Geography entity tracking (locations + provinces)
-            try:
-                loc_statics = extract_location_statics(save)
-                loc_static_count = await self._db.bulk_upsert_locations(pt_id, loc_statics)
-
-                loc_rows = extract_location_snapshot_rows(save)
-                loc_snap_count = await self._db.insert_location_snapshots(
-                    pt_id, snap_id, save.game_date, loc_rows,
-                )
-
-                prov_statics = extract_province_statics(save)
-                prov_static_count = await self._db.bulk_upsert_provinces(pt_id, prov_statics)
-
-                prov_rows = extract_province_snapshot_rows(save)
-                prov_snap_count = await self._db.insert_province_snapshots(
-                    pt_id, snap_id, save.game_date, prov_rows,
-                )
-
-                logger.info(
-                    f"  Geography: {loc_static_count} locations, "
-                    f"{loc_snap_count} loc snapshots, "
-                    f"{prov_static_count} provinces, "
-                    f"{prov_snap_count} prov snapshots"
-                )
-            except Exception:
-                logger.exception("Error in geography extraction")
-
-            # Step 9: Demographics — per-pop data
-            try:
-                pop_rows = extract_pop_snapshot_rows(save)
-                pop_count = await self._db.insert_pop_snapshots(
-                    pt_id, snap_id, save.game_date, pop_rows,
-                )
-                logger.info(f"  Demographics: {pop_count} pop snapshot rows")
-            except Exception:
-                logger.exception("Error in demographics extraction")
-        else:
+        if not should_snapshot(save.game_date, last_snap_date, self.config.snapshot_freq):
             logger.info(f"  Skipped snapshot (freq={self.config.snapshot_freq}, date={save.game_date})")
+            return
+
+        # Step 5: Extract and store snapshot
+        snapshot_data = extract_snapshot(
+            save,
+            enabled_fields=self._enabled_fields,
+        )
+        snap_id = await self._db.insert_snapshot(pt_id, save.game_date, snapshot_data)
+        if snap_id is None:
+            # Duplicate inserted by a concurrent process between our check and write
+            logger.info(f"  Skipped snapshot — race-condition duplicate at {save.game_date}")
+            return
+        logger.info(f"  Snapshot #{snap_id} recorded at {save.game_date}")
+        if self._on_snapshot:
+            self._on_snapshot(snapshot_data)
+
+        # Step 6: Religion entity tracking
+        try:
+            rel_statics = extract_religion_statics(save)
+            for r in rel_statics:
+                await self._db.upsert_religion(
+                    playthrough_id=pt_id,
+                    religion_id=r["religion_id"],
+                    definition=r["definition"],
+                    name=r.get("name", ""),
+                    religion_group=r.get("religion_group", ""),
+                    has_religious_head=r.get("has_religious_head", False),
+                    color_rgb=r.get("color_rgb"),
+                )
+            rel_rows = extract_religion_snapshot_rows(save)
+            rel_count = await self._db.insert_religion_snapshots(
+                pt_id, snap_id, save.game_date, rel_rows,
+            )
+            logger.info(f"  {len(rel_statics)} religions upserted, {rel_count} snapshot rows")
+        except Exception:
+            logger.exception("Error in religion extraction")
+
+        # Step 7: War entity tracking
+        try:
+            war_statics = extract_war_statics(save)
+            for w in war_statics:
+                await self._db.upsert_war(pt_id, w)
+
+            war_snap_rows = extract_war_snapshot_rows(save)
+            war_snap_count = await self._db.insert_war_snapshots(
+                pt_id, snap_id, save.game_date, war_snap_rows,
+            )
+
+            all_participants = extract_all_war_participants(save)
+            part_count = 0
+            for wid, parts in all_participants.items():
+                part_count += await self._db.upsert_war_participants(
+                    pt_id, wid, parts,
+                )
+
+            logger.info(
+                f"  {len(war_statics)} wars upserted, "
+                f"{war_snap_count} war snapshot rows, "
+                f"{part_count} participants"
+            )
+        except Exception:
+            logger.exception("Error in war extraction")
+
+        # Step 8: Geography entity tracking (locations + provinces)
+        try:
+            loc_statics = extract_location_statics(save)
+            loc_static_count = await self._db.bulk_upsert_locations(pt_id, loc_statics)
+
+            loc_rows = extract_location_snapshot_rows(save)
+            loc_snap_count = await self._db.insert_location_snapshots(
+                pt_id, snap_id, save.game_date, loc_rows,
+            )
+
+            prov_statics = extract_province_statics(save)
+            prov_static_count = await self._db.bulk_upsert_provinces(pt_id, prov_statics)
+
+            prov_rows = extract_province_snapshot_rows(save)
+            prov_snap_count = await self._db.insert_province_snapshots(
+                pt_id, snap_id, save.game_date, prov_rows,
+            )
+
+            logger.info(
+                f"  Geography: {loc_static_count} locations, "
+                f"{loc_snap_count} loc snapshots, "
+                f"{prov_static_count} provinces, "
+                f"{prov_snap_count} prov snapshots"
+            )
+        except Exception:
+            logger.exception("Error in geography extraction")
+
+        # Step 9: Demographics — per-pop data
+        try:
+            pop_rows = extract_pop_snapshot_rows(save)
+            pop_count = await self._db.insert_pop_snapshots(
+                pt_id, snap_id, save.game_date, pop_rows,
+            )
+            logger.info(f"  Demographics: {pop_count} pop snapshot rows")
+        except Exception:
+            logger.exception("Error in demographics extraction")
 
     # ------------------------------------------------------------------
     # Playthrough management

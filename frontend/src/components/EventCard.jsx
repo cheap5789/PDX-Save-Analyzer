@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useApi } from '../hooks/useApi'
+import { useCountryNames } from '../contexts/CountryNamesContext'
+import { fmtCountry } from '../utils/formatters'
 
 const EVENT_ICONS = {
   age_transition:           { icon: '✨', color: 'var(--color-warning)' },
@@ -34,7 +36,7 @@ function eventLabel(type) {
  * Uses localised display names stored in the payload where available,
  * falling back to raw keys with underscores replaced.
  */
-function describeEvent(type, payload) {
+function describeEvent(type, payload, nameMap) {
   if (!payload || typeof payload !== 'object') return ''
   const p = payload
 
@@ -42,8 +44,11 @@ function describeEvent(type, payload) {
   const dn = (display, raw) =>
     (display && display !== raw) ? display : (raw || '').replace(/_/g, ' ')
 
-  /** Helper: format an array of tags as a comma-separated string. */
-  const tags = (arr) => Array.isArray(arr) ? arr.join(', ') : String(arr || '')
+  /** Helper: format an array of tags as "Name (TAG), ..." comma-separated string. */
+  const tags = (arr) =>
+    Array.isArray(arr)
+      ? arr.map((t) => fmtCountry(t, nameMap)).join(', ')
+      : String(arr || '')
 
   switch (type) {
     case 'age_transition': {
@@ -141,9 +146,10 @@ function describeEvent(type, payload) {
 
 export default function EventCard({ event, onNoteUpdated }) {
   const api = useApi()
+  const nameMap = useCountryNames()
   const { icon, color } = EVENT_ICONS[event.event_type] || DEFAULT_ICON
   const label = eventLabel(event.event_type)
-  const description = describeEvent(event.event_type, event.payload)
+  const description = describeEvent(event.event_type, event.payload, nameMap)
 
   const [editing, setEditing] = useState(false)
   const [noteText, setNoteText] = useState(event.aar_note || '')
@@ -186,10 +192,10 @@ export default function EventCard({ event, onNoteUpdated }) {
             </span>
             {event.country_tag && (
               <span
-                className="text-xs px-1.5 py-0.5 rounded font-mono"
+                className="text-xs px-1.5 py-0.5 rounded"
                 style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text-muted)' }}
               >
-                {event.country_tag}
+                {fmtCountry(event.country_tag, nameMap)}
               </span>
             )}
             {hasId && !editing && (

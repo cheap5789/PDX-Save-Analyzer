@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useApi } from './hooks/useApi'
 import { useWebSocket } from './hooks/useWebSocket'
+import { CountryNamesContext } from './contexts/CountryNamesContext'
 import TabBar from './components/TabBar'
 import OverviewTab from './components/tabs/OverviewTab'
 import ChartsTab from './components/tabs/ChartsTab'
@@ -111,6 +112,17 @@ export default function App() {
     )
   }, [])
 
+  // Build tag → display name lookup from all snapshots (_name embedded by backend)
+  const tagNameMap = useMemo(() => {
+    const map = {}
+    for (const snap of allSnapshots) {
+      for (const [tag, data] of Object.entries(snap.countries || {})) {
+        if (!map[tag] && data._name) map[tag] = data._name
+      }
+    }
+    return map
+  }, [allSnapshots])
+
   // Callback for ConfigTab to update status after start/stop/load
   const handleStatusChange = useCallback((newStatus) => {
     setRestStatus(newStatus)
@@ -134,6 +146,7 @@ export default function App() {
   }, [clearHistory, fetchPlaythroughData])
 
   return (
+    <CountryNamesContext.Provider value={tagNameMap}>
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--color-bg)' }}>
       {/* Header */}
       <header className="px-6 pt-4 pb-0">
@@ -171,5 +184,6 @@ export default function App() {
         )}
       </main>
     </div>
+    </CountryNamesContext.Provider>
   )
 }

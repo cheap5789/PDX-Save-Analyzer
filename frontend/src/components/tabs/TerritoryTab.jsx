@@ -218,8 +218,8 @@ export default function TerritoryTab({ status }) {
                     <td className="px-2 py-1 capitalize" style={{ color: RANK_COLORS[loc.rank] }}>
                       {(loc.rank || '').replace('rural_settlement', 'rural')}
                     </td>
-                    <td className="px-2 py-1">{(loc.development || 0).toFixed(1)}</td>
-                    <td className="px-2 py-1">{(loc.prosperity || 0).toFixed(2)}</td>
+                    <td className="px-2 py-1">{(loc.development || 0).toFixed(1)}%</td>
+                    <td className="px-2 py-1">{(loc.prosperity || 0).toFixed(1)}%</td>
                     <td className="px-2 py-1">{(loc.pop_count || 0).toLocaleString()}</td>
                     <td className="px-2 py-1">{(loc.tax || 0).toFixed(2)}</td>
                     <td className="px-2 py-1 capitalize" style={{ color: INTEGRATION_COLORS[loc.integration_type] }}>

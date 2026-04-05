@@ -1,5 +1,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import EventCard from '../EventCard'
+import { useCountryNames } from '../../contexts/CountryNamesContext'
+import { fmtCountry } from '../../utils/formatters'
 
 const EVENT_TYPES = [
   'all',
@@ -88,6 +90,7 @@ export default function EventsTab({ events: allEvents, onEventNoteUpdated }) {
   }, [onEventNoteUpdated])
 
   const hasCountryFilter = selectedTags.size > 0
+  const nameMap = useCountryNames()
 
   return (
     <div className="p-6 space-y-4">
@@ -150,7 +153,7 @@ export default function EventsTab({ events: allEvents, onEventNoteUpdated }) {
                     outline: active ? 'none' : '1px solid transparent',
                   }}
                 >
-                  {tag}
+                  {fmtCountry(tag, nameMap)}
                 </button>
               )
             })}
