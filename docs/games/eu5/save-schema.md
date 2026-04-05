@@ -894,9 +894,7 @@ Per-snapshot state — stored at each save snapshot alongside country and religi
 | War direction (quarter) | `war_direction_quarter` | `-85` | Score momentum over last quarter. Negative = defenders gaining ground. Key trend indicator. |
 | War direction (year) | `war_direction_year` | `-14` | Score momentum over last year. Smoothed version of quarter delta. |
 | War goal held | `war_goal_held` | `1309` (location ID) | Location currently held by the side that controls the war goal. Present only in applicable goal types. |
-| Occupied locations | `locations` | `{loc_id: country_id, …}` | Full occupation map: which country controls each location in the war theatre. Up to 1,395 entries in large wars. **Store as JSON blob** per snapshot — too many rows for a normalized table. |
-
-> **Occupation map rationale**: The locations dict changes each snapshot as territory is taken or recaptured. Storing it as a JSON blob preserves the full picture cheaply. At display time, cross-reference with location→country metadata to compute "% of country X's territory occupied" or "total locations held by each side".
+| ~~Occupied locations~~ | `locations` | `{loc_id: country_id, …}` | **SKIPPED** — Occupation is already captured by controller ≠ owner on locations (field #147) and siege events. Redundant with geography layer. |
 
 ---
 
@@ -979,17 +977,17 @@ Per-country bilateral `relations` sub-dicts (Opinion, Trust, Antagonism biases p
 
 46. **[NEW] War entity table (static)**: Create a `wars` table populated once per war. Fields: war_id, name_key, name_bases (JSON), start_date, end_date (nullable), is_civil_war, is_revolt, original_attacker_id, original_attacker_target_id, original_defenders (JSON list), goal_type, casus_belli, goal_target (JSON). Category: `wars` / `architecture`.
 
-47. **[NEW] War snapshot table**: Per snapshot, store: war_id, snapshot_id, attacker_score, defender_score, net_war_score (derived), war_direction_quarter, war_direction_year, war_goal_held (location ID, nullable), occupied_locations (JSON blob `{location_id: country_id}`). Category: `wars`.
+47. **[NEW] War snapshot table**: Per snapshot, store: war_id, snapshot_id, attacker_score, defender_score, net_war_score (derived), war_direction_quarter, war_direction_year, war_goal_held (location ID, nullable). Category: `wars`.
 
 48. **[NEW] War participant table**: Per (war_id, country_id): side, join_reason, join_type, called_by (country_id, nullable), join_date, io_id (nullable), status (Active/Left/Declined), score_combat, score_siege, score_joining, losses (JSON blob `{unit_type: {cause: count}}`). Update status field when participant exits. Category: `wars`.
 
-49. **[NEW] Parser refactor — wars as parallel tracked entity**: Extend the snapshot loop to process `war_manager.database`. On each snapshot: (a) detect new wars → insert into `wars` table + insert all participants; (b) update `end_date` for newly concluded wars; (c) detect status changes in participants (Active → Left); (d) insert war snapshot row with scores and occupation map. Skip null `"none"` entries. Category: `architecture` / `parser`.
+49. **[NEW] Parser refactor — wars as parallel tracked entity**: Extend the snapshot loop to process `war_manager.database`. On each snapshot: (a) detect new wars → insert into `wars` table + insert all participants; (b) update `end_date` for newly concluded wars; (c) detect status changes in participants (Active → Left); (d) insert war snapshot row with scores. Skip null `"none"` entries. Category: `architecture` / `parser`.
 
 50. **[NEW] War events**: Derive events from war processing: "war started" (new war_id), "war ended" (end_date appeared), "country joined war" (new Active participant), "country left war" (status → Left), "country declined" (status = Declined). Emit with war_id, country_id, side, date context. Category: `events`.
 
 51. **[NEW] Battle sub-events**: When processing a war snapshot, if `battle.date` differs from the previously stored value, record a battle event: war_id, location_id, date, is_land, winner_side, war_score_delta, attacker_country_id, attacker_character_id, defender_country_id, defender_character_id, attacker_losses (JSON), defender_losses (JSON). Category: `events` / `wars`.
 
-52. **[NEW] Frontend — War view**: Add a War navigation entry. War list page: all wars (active first, then concluded) with name, start/end dates, participant count, current net score. War detail page: participants list with side/losses/contribution score, war score trend line over snapshots, occupation map evolution, battle events timeline. Category: `frontend`.
+52. **[NEW] Frontend — War view**: Add a War navigation entry. War list page: all wars (active first, then concluded) with name, start/end dates, participant count, current net score. War detail page: participants list with side/losses/contribution score, war score trend line over snapshots, battle events timeline. Category: `frontend`.
 
 ---
 
@@ -1058,8 +1056,8 @@ Only locations with an `owner` field are snapshotted (13,594 in sample). Terra i
 | # | Field | JSON path | Sample | Keep? | Notes |
 |---|-------|-----------|--------|-------|-------|
 | 162 | Rank | `rank` | `"town"` | **YES** | `rural_settlement` (19,726), `town` (902), `city` (265). Rank-up = major development event. |
-| 163 | Development | `development` | `30.08` | **YES** | Float. The core prosperity/productivity scalar. Track over time for growth analysis. |
-| 164 | Prosperity | `prosperity` | `0.21492` | **YES** | Float 0–1. Bonus productivity multiplier. Rises in peace, falls in war. |
+| 163 | Development | `development` | `30.08` | **YES** | Float 0–100 (same scale as government power). The core productivity scalar. Track over time for growth analysis. |
+| 164 | Prosperity | `prosperity` | `0.21492` | **YES** | Float −100 to +100 (same scale as stability). Rises in peace, falls in war. Raw value is fractional — multiply by 100 for display. |
 | 165 | Tax | `tax` | `3.60046` | **YES** | Current tax yield (float). |
 | 166 | Possible tax | `possible_tax` | `3.60046` | **YES** | Max tax if fully exploited. Delta from `tax` = uncollected tax capacity. |
 | 167 | Market ID | `market` | `27` | **YES** | Integer reference to `market_manager.database`. Which trade hub this location belongs to. |
@@ -1136,21 +1134,21 @@ Provinces are tracked for their food economy data. One row per province per snap
 
 #### Geography — Backlog
 
-56. **[NEW] Location static table**: Create a `locations` table (written once per location_id). Fields: location_id, province_id (nullable), raw_material, is_port (boolean), holy_sites (JSON list of religion IDs). Populated on first encounter, updated only if static fields change. Category: `geography` / `architecture`.
+53. **[NEW] Location static table**: Create a `locations` table (written once per location_id). Fields: location_id, province_id (nullable), raw_material, is_port (boolean), holy_sites (JSON list of religion IDs). Populated on first encounter, updated only if static fields change. Category: `geography` / `architecture`.
 
-57. **[NEW] Location snapshot table**: Per snapshot, per owned location (those with `owner` field). Fields: location_id, snapshot_id, owner_id, controller_id, previous_owner_id, last_owner_change, last_controller_change, cores (JSON list), garrison, control, culture_id, secondary_culture_id, cultural_unity, religion_id, religious_unity (nullable), language, dialect, pop_count, rank, development, prosperity, tax, possible_tax, market_id, market_access, value_flow, institutions (JSON blob), integration_type, integration_owner_id, slave_raid_date (nullable). Category: `geography`.
+54. **[NEW] Location snapshot table**: Per snapshot, per owned location (those with `owner` field). Fields: location_id, snapshot_id, owner_id, controller_id, previous_owner_id, last_owner_change, last_controller_change, cores (JSON list), garrison, control, culture_id, secondary_culture_id, cultural_unity, religion_id, religious_unity (nullable), language, dialect, pop_count, rank, development, prosperity, tax, possible_tax, market_id, market_access, value_flow, institutions (JSON blob), integration_type, integration_owner_id, slave_raid_date (nullable). Category: `geography`.
 
-58. **[NEW] Province static table**: Create a `provinces` table (written once per province_id). Fields: province_id, province_definition (string key), capital_location_id (nullable). Category: `geography` / `architecture`.
+55. **[NEW] Province static table**: Create a `provinces` table (written once per province_id). Fields: province_id, province_definition (string key), capital_location_id (nullable). Category: `geography` / `architecture`.
 
-59. **[NEW] Province snapshot table**: Per snapshot, per province with owner. Fields: province_id, snapshot_id, owner_id, food_current, food_max, food_change_delta, trade_balance, goods_produced (JSON blob). Category: `geography`.
+56. **[NEW] Province snapshot table**: Per snapshot, per province with owner. Fields: province_id, snapshot_id, owner_id, food_current, food_max, food_change_delta, trade_balance, goods_produced (JSON blob). Category: `geography`.
 
-60. **[NEW] Parser refactor — geography as parallel tracked entity set**: Extend snapshot loop to process `locations.locations` and `provinces.database`. Skip null/unowned location entries. Detect ownership, controller, culture, religion, rank, integration, core, and slave-raid changes and emit corresponding events. Category: `architecture` / `parser`.
+57. **[NEW] Parser refactor — geography as parallel tracked entity set**: Extend snapshot loop to process `locations.locations` and `provinces.database`. Skip null/unowned location entries. Detect ownership, controller, culture, religion, rank, integration, core, and slave-raid changes and emit corresponding events. Category: `architecture` / `parser`.
 
-61. **[NEW] Geography events**: Emit location events as documented in the Events table above: first ownership, ownership/controller change, core gain/loss, integration upgrade, culture/religion flip, rank upgrade, slave raid. Category: `events`.
+58. **[NEW] Geography events**: Emit location events as documented in the Events table above: first ownership, ownership/controller change, core gain/loss, integration upgrade, culture/religion flip, rank upgrade, slave raid. Category: `events`.
 
-62. **[NEW] Frontend — Location view**: Country detail page gets a "Territory" tab: table of all owned locations with rank, development, integration status, culture, religion, cores indicator. Sortable/filterable. Timeline of ownership change events. Location detail page: full snapshot history of all fields, event markers. Category: `frontend`.
+59. **[NEW] Frontend — Location view**: Country detail page gets a "Territory" tab: table of all owned locations with rank, development, integration status, culture, religion, cores indicator. Sortable/filterable. Timeline of ownership change events. Location detail page: full snapshot history of all fields, event markers. Category: `frontend`.
 
-63. **[NEW] Frontend — Province aggregation**: Province summary (food stock, food delta, goods produced last month) displayed as a sub-group within the Territory tab on the country detail page. Category: `frontend`.
+60. **[NEW] Frontend — Province aggregation**: Province summary (food stock, food delta, goods produced last month) displayed as a sub-group within the Territory tab on the country detail page. Category: `frontend`.
 
 ---
 
@@ -1271,15 +1269,15 @@ Pop IDs are not guaranteed stable across snapshots (new pops can be created, exi
 
 #### Demographics — Backlog
 
-64. **[NEW] Pop snapshot table**: Per snapshot, per location, per pop object: pop_id, location_id, snapshot_id, type, estate, culture_id, religion_id, size, status (nullable), satisfaction (nullable), intervention_satisfaction (nullable), literacy (nullable), owner_id (nullable). Category: `demographics`.
+61. **[NEW] Pop snapshot table**: Per snapshot, per location, per pop object: pop_id, location_id, snapshot_id, type, estate, culture_id, religion_id, size, status (nullable), satisfaction (nullable), intervention_satisfaction (nullable), literacy (nullable), owner_id (nullable). Category: `demographics`.
 
-65. **[NEW] Parser — pop ingestion**: In the snapshot loop, for each owned location: iterate `location.population.pops`, resolve each ID in `population.database`, extract the fields above, and insert into `pop_snapshots`. Skip non-dict entries. Category: `demographics` / `parser`.
+62. **[NEW] Parser — pop ingestion**: In the snapshot loop, for each owned location: iterate `location.population.pops`, resolve each ID in `population.database`, extract the fields above, and insert into `pop_snapshots`. Skip non-dict entries. Category: `demographics` / `parser`.
 
-66. **[NEW] Frontend — Demographics tab (country)**: On the country detail page, add a Demographics tab. Show: total pop mass by type over time (stacked area chart), satisfaction by type over time (line chart), literacy by type, slave population over time, culture composition (pie + trend), religion composition (pie + trend). Category: `frontend`.
+63. **[NEW] Frontend — Demographics tab (country)**: On the country detail page, add a Demographics tab. Show: total pop mass by type over time (stacked area chart), satisfaction by type over time (line chart), literacy by type, slave population over time, culture composition (pie + trend), religion composition (pie + trend). Category: `frontend`.
 
-67. **[NEW] Frontend — Demographics tab (location)**: On the location detail page, add a Demographics section. Show: current pop breakdown by type × culture × religion (table), satisfaction per group, slave pops separately. Category: `frontend`.
+64. **[NEW] Frontend — Demographics tab (location)**: On the location detail page, add a Demographics section. Show: current pop breakdown by type × culture × religion (table), satisfaction per group, slave pops separately. Category: `frontend`.
 
-68. **[NEW] Slave demographic view**: Aggregate slave pops by owning country and by captured culture/religion. Display: total slave mass per country over time, and breakdown of slave cultures (who was enslaved). Link to slave raid events on the location. Category: `frontend` / `demographics`.
+65. **[NEW] Slave demographic view**: Aggregate slave pops by owning country and by captured culture/religion. Display: total slave mass per country over time, and breakdown of slave cultures (who was enslaved). Link to slave raid events on the location. Category: `frontend` / `demographics`.
 
 ---
 
@@ -1287,29 +1285,30 @@ Pop IDs are not guaranteed stable across snapshots (new pops can be created, exi
 - [x] ~~Confirm meaning of `stability` scale~~ → Confirmed: −100 to +100. Three auto-modifiers in `common/auto_modifiers/country.txt`.
 - [x] ~~Confirm `karma` / `purity` / `righteousness` — which religion mechanics use which?~~ → Confirmed: `karma` = `bon`, `mahayana`, `theravada`, `sammitiya`, `tibetan_buddhism`; `purity` = `shinto`; `righteousness` = `sanjiao`. Religion view filters display via `has_karma` / `has_purity` / `has_righteousness` flags on the religion definition.
 - [ ] Determine which cultures count as "discriminated" — need to cross-reference country pops with culture lists
-- [ ] Manpower/sailors ×1000 and inflation ×100: decide whether to transform at storage or display time
-- [ ] Missing economy line items (food sold/bought, interest, subsidies, court): can any be reconstructed from `loan_manager`, `market_manager`, or province data? Or accept as runtime-calculated?
-- [ ] `balance_history_2.Gold` vs `economy.recent_balance[-1]`: confirmed different (9.65 vs 21.94). Gold delta = actual treasury change (including one-offs), recent_balance = income−expense only. Verify this interpretation with more data points.
-- [ ] `CourtMaintenance` absent for FRA — what is the default value? Check other countries or game defaults.
-- [ ] `historical_tax_base` and `historical_population` — what are the 9 data points? Time intervals? Need to check structure (array of values? array of {date, value}?).
+- [x] ~~Manpower/sailors ×1000 and inflation ×100: decide whether to transform at storage or display time~~ → **Store raw, transform at display time.** Values are fractional floats (e.g. SWE manpower=0.9114 → display 911). Keeping raw values avoids lossy rounding and is consistent with how all other `currency_data` fields are stored. Multiplier constants: manpower/sailors ×1000, inflation ×100.
+- [x] ~~Missing economy line items (food sold/bought, interest, subsidies, court): can any be reconstructed from `loan_manager`, `market_manager`, or province data?~~ → **Cannot be reconstructed.** `economy.income` and `economy.expense` are single monthly aggregate floats, not breakdowns. No per-category line items exist in the save. `economy.monthly_gold` is a 12-month rolling array of income totals. `economy.recent_balance` is a 12-month rolling array of net balance. Accept as runtime-only calculations; the save only stores aggregates.
+- [x] ~~`balance_history_2.Gold` vs `economy.recent_balance[-1]`~~ → **Confirmed different metrics.** For SWE: `balance_history_2.Gold`=2.51, `economy.recent_balance[-1]`=−2.42, `economy.income`=16.33, `economy.expense`=18.74. `recent_balance[-1]` = income − expense = net monthly flow. `balance_history_2.Gold` = actual treasury delta (income − expense + one-offs like loot, gifts, loans). Both tracked; `balance_history_2.Gold` is the more complete metric.
+- [x] ~~`CourtMaintenance` absent for FRA — what is the default value?~~ → **Resolved.** `CourtMaintenance` lives at `economy.maintenances.CourtMaintenance`, not as a top-level economy key. SWE has it at 0.2 (20% slider). GRL has no `CourtMaintenance` key at all — the country simply does not have a court. When absent from `maintenances` dict: country has no court mechanic. Default for countries with a court: read from the slider; absent = no court.
+- [x] ~~`historical_tax_base` and `historical_population` — what are the 9 data points?~~ → **Resolved.** Both are flat `list[float]` with no associated dates. 9 data points for a game running ~9 years (1337→1345) = yearly snapshots from game start to current year. No date metadata — the index position maps to year offset from start date. `historical_population` last entry (671.42) closely tracks `last_months_population` (675.29), confirming they measure the same pop-mass unit.
 - [ ] `current_research.progress` threshold — what value means "research complete"? Needs game data (`common/advances/` or `common/defines/`).
 - [ ] Unit type max strength — parse `common/unit_types/` to build `{type_key: max_strength}` lookup for accurate deployed manpower calculation.
 - [ ] Advance classification — parse `common/advances/` to classify each advance by domain (scientific, social, military, economic…). One-shot at startup; enables grouped advance display and research strategy analysis.
-- [ ] Societal values visualization strategy — 16 slider values tracked over time. Best approach: radar chart per snapshot (filtering -999 N/A values) + per-slider trend lines? Decide during frontend design phase.
+- [x] ~~Societal values visualization strategy~~ → Deferred to frontend design phase. Radar chart + per-slider trend lines is the working plan; -999 values filtered at display time.
 - [x] ~~Age transition dates~~ → Confirmed universal: Age of Traditions → Renaissance 1342, then 1437/1537/1637/1737 (pattern 1x37 from age 3). Score resets to 0 at each transition. `score.age_score[n]` holds the cumulative score earned in age n.
+- [x] ~~`metadata` structure~~ → **11 keys** (not 13 as initially estimated): `date`, `playthrough_id`, `playthrough_name`, `save_label`, `version`, `flag` (full flag definition string), `player_country_name`, `code_version_info` (dict with game code hash, build timestamp), `enabled_dlcs` (list), `compatibility` (dict with locations hash + location list), `playthrough_playset_info` (list, empty in sample). All documented.
+- [x] ~~`played_country` structure~~ → **9 keys** (not 7 as initially estimated): `name` ("cheap"), `id` (1), `same_name` (bool), `country` (country index, e.g. 13), `automate_playstyle` (list of ["ADMINISTRATIVE","DIPLOMATIC","MILITARY"]), `player_proficiency` ("EXPERT"), `pins` (list), `control_groups` (dict with size + numbered hotkey bindings), `preferred_map_mode` ("terrain"). All documented.
+- [x] ~~`last_months_population` unit~~ → **Pop mass unit** (same scale as `sum(pop.size)`), NOT headcount. SWE: `last_months_population`=675.29, `counters.Pops`=110, `historical_population[-1]`=671.42. The value tracks the pop-mass scalar, not individual persons. `counters.Pops` is the distinct pop-object count (integer).
+- [x] ~~`total_produced` vs `last_month_produced`~~ → **Same metric, different granularity.** `total_produced` = scalar float (SWE: 219.05). `last_month_produced` = dict of ~48 goods → float amounts. `sum(last_month_produced.values())` = 219.05 = `total_produced`. The scalar is the aggregate of the per-good breakdown. Both fields exist on the country object. Store `last_month_produced` (the breakdown); `total_produced` is derivable.
+- [x] ~~`advance_manager.database[id].t` stability~~ → **Confirmed stable 1:1 lookup.** 2,623 dict entries, each with a single key `t` mapping to a unique advance string key. 6 empty `[]` entries (sentinel/padding). Zero duplicate `t` values. The age-specific trees (`age_1_traditions`, `age_2_renaissance`, etc.) use `{ref: id, children: [...]}` to describe the tech-tree graph structure — `ref` values point into `database` IDs. Safe to use `database[id].t` as the canonical ID→key resolver.
 
 ---
 
-## Pending Investigation
+## Remaining Open Questions
 
-Items below require looking up live game data or save exploration before they can be documented. Do not implement against these until resolved.
+Items below still require game-file lookup or further investigation:
 
-1. **`metadata` undocumented keys**: The top-level `metadata` object is `dict(13)` but only 10 keys are documented. Three keys are unknown — identify all 13.
-
-2. **`played_country` undocumented keys**: The `played_country` object is `dict(7)` but only 5 keys are documented. Two keys are unknown — identify all 7.
-
-3. **`last_months_population` unit**: The field holds a float (e.g. `431.28` for WUR). Unit is unclear — direct population heads? thousands? Needs verification against game UI population display.
-
-4. **`total_produced` vs `last_month_produced`**: The old country object summary shows `total_produced: 214.62` (single float). The audit (item #69) documents `last_month_produced` as a dict of 48 goods. Determine whether these are two different fields, the same field under a different name, or one being a sum of the other.
-
-5. **`advance_manager.database[id].t`**: The `advance_manager` lookup resolves advance integer IDs to string keys via a field named `t` (e.g. `{551: {t: "improve_relation_impact_renaissance"}}`). The meaning and stability of `t` as a field name is unknown. The nested path hint suggests the structure may be deeper than a flat `{id: {t: key}}`: `/advance_manager/age_1_traditions/children/1/children/0/children/0/children/1/ref = int 315`. Investigate the full `advance_manager` structure before relying on `t` as the stable lookup key.
+- [ ] `capital` location ID → string name mapping (needs `common/locations/` game files)
+- [x] ~~Determine which cultures count as "discriminated"~~ → **Resolved.** Any culture present in a country's pops that is NOT in `primary_culture`, `accepted_cultures`, or `tolerated_cultures` is discriminated by default. No special field needed — derivable at query time from pop data.
+- [x] ~~`current_research.progress` threshold for completion~~ → **Dropped.** Threshold is variable per advance, not a fixed constant. Don't track completion — just track current progress value and detect research change when the active advance key switches between snapshots.
+- [ ] Unit type max strength lookup (needs `common/unit_types/` game files) — **Deferred to follow-up project.**
+- [ ] Advance classification by domain (needs `common/advances/` game files) — **Deferred to follow-up project.**

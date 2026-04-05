@@ -50,6 +50,18 @@ def extract_snapshot(
     if enabled_fields is None:
         enabled_fields = get_default_fields()
 
+    # Pre-load shared context objects for extended field resolution
+    diplomacy_mgr = save.raw.get("diplomacy_manager", {})
+    char_db_obj = save.raw.get("character_db", {})
+    char_db = char_db_obj.get("database", {}) if isinstance(char_db_obj, dict) else {}
+
+    # Check if any enabled fields need diplomacy or character data
+    needs_diplomacy = any(f.json_path.startswith("@diplomacy:") for f in enabled_fields)
+    needs_characters = any(
+        f.json_path.startswith("@ruler:") or f.json_path.startswith("@heir:")
+        for f in enabled_fields
+    )
+
     # Build the list of (country_id, tag, country_data) to extract
     if country_tags is not None:
         # Invert tag_index to find IDs for requested tags
@@ -67,9 +79,17 @@ def extract_snapshot(
     # Extract fields for each country
     countries: dict[str, dict[str, Any]] = {}
     for cid, tag, cdata in targets:
+        # Get diplomacy data for this country (keyed by numeric cid)
+        diplo = diplomacy_mgr.get(cid) if needs_diplomacy else None
+
         row: dict[str, Any] = {}
         for field in enabled_fields:
-            val = resolve_field_value(cdata, field)
+            val = resolve_field_value(
+                cdata,
+                field,
+                diplomacy_obj=diplo,
+                character_db=char_db if needs_characters else None,
+            )
             if val is not None:
                 row[field.key] = val
         if row:
