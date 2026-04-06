@@ -14,7 +14,7 @@ import DemographicsTab from './components/tabs/DemographicsTab'
 
 export default function App() {
   const api = useApi()
-  const { connected, status: wsStatus, snapshots: liveSnapshots, events: liveEvents, clearHistory } = useWebSocket()
+  const { connected, status: wsStatus, snapshots: liveSnapshots, events: liveEvents, backfillProgress, clearHistory } = useWebSocket()
   const [activeTab, setActiveTab] = useState('overview')
   const [restStatus, setRestStatus] = useState(null)
 
@@ -112,16 +112,30 @@ export default function App() {
     )
   }, [])
 
-  // Build tag → display name lookup from all snapshots (_name embedded by backend)
-  const tagNameMap = useMemo(() => {
+  // Build tag → { name, color, prevTags } metadata from snapshots
+  // (_name, _color, _prev_tags are embedded by the backend's snapshot.py)
+  const tagMetaMap = useMemo(() => {
     const map = {}
     for (const snap of allSnapshots) {
       for (const [tag, data] of Object.entries(snap.countries || {})) {
-        if (!map[tag] && data._name) map[tag] = data._name
+        if (!map[tag]) map[tag] = {}
+        if (!map[tag].name     && data._name)      map[tag].name     = data._name
+        if (!map[tag].color    && data._color)     map[tag].color    = data._color
+        if (!map[tag].prevTags && data._prev_tags) map[tag].prevTags = data._prev_tags
       }
     }
     return map
   }, [allSnapshots])
+
+  // Selected countries — lifted here so the selection persists across tab changes.
+  // Auto-seed with the player tag on first status arrival.
+  const [selectedCountries, setSelectedCountries] = useState([])
+  useEffect(() => {
+    const tag = status?.country_tag
+    if (tag && selectedCountries.length === 0) {
+      setSelectedCountries([tag])
+    }
+  }, [status?.country_tag])
 
   // Callback for ConfigTab to update status after start/stop/load
   const handleStatusChange = useCallback((newStatus) => {
@@ -146,7 +160,7 @@ export default function App() {
   }, [clearHistory, fetchPlaythroughData])
 
   return (
-    <CountryNamesContext.Provider value={tagNameMap}>
+    <CountryNamesContext.Provider value={tagMetaMap}>
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--color-bg)' }}>
       {/* Header */}
       <header className="px-6 pt-4 pb-0">
@@ -162,7 +176,12 @@ export default function App() {
           <OverviewTab status={status} snapshots={allSnapshots} events={allEvents} />
         )}
         {activeTab === 'charts' && (
-          <ChartsTab snapshots={allSnapshots} status={status} />
+          <ChartsTab
+            snapshots={allSnapshots}
+            status={status}
+            selectedCountries={selectedCountries}
+            onSelectedCountriesChange={setSelectedCountries}
+          />
         )}
         {activeTab === 'events' && (
           <EventsTab events={allEvents} status={status} onEventNoteUpdated={handleEventNoteUpdated} />
@@ -180,7 +199,7 @@ export default function App() {
           <DemographicsTab status={status} />
         )}
         {activeTab === 'config' && (
-          <ConfigTab status={status} onStatusChange={handleStatusChange} />
+          <ConfigTab status={status} onStatusChange={handleStatusChange} backfillProgress={backfillProgress} />
         )}
       </main>
     </div>

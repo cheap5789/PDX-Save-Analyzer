@@ -1,14 +1,15 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  ReferenceLine,
 } from 'recharts'
 import { useApi } from '../../hooks/useApi'
 import CountryPicker from '../CountryPicker'
-import { fmtValue, fmtAxisTick, fmtCountry } from '../../utils/formatters'
+import { fmtValue, fmtAxisTick, fmtCountry, countryColor } from '../../utils/formatters'
 import { useCountryNames } from '../../contexts/CountryNamesContext'
 
-// Distinct colors for up to 8 overlaid country lines
-const LINE_COLORS = [
+// Fallback palette used when a country has no save-defined color
+const FALLBACK_COLORS = [
   '#3b82f6', '#ef4444', '#22c55e', '#f59e0b',
   '#8b5cf6', '#ec4899', '#06b6d4', '#f97316',
 ]
@@ -18,24 +19,16 @@ const FIELD_CATEGORIES = [
   'religion', 'score', 'demographics', 'technology',
 ]
 
-export default function ChartsTab({ snapshots, status }) {
+export default function ChartsTab({ snapshots, selectedCountries, onSelectedCountriesChange }) {
   const api = useApi()
   const [fields, setFields] = useState([])
   const [selectedCategory, setSelectedCategory] = useState('economy')
   const [selectedField, setSelectedField] = useState(null)
-  const [selectedCountries, setSelectedCountries] = useState([])
 
   // Load field catalog
   useEffect(() => {
     api.getFields().then(setFields).catch(() => {})
   }, [])
-
-  // Auto-select player tag when status arrives
-  useEffect(() => {
-    if (status?.country_tag && selectedCountries.length === 0) {
-      setSelectedCountries([status.country_tag])
-    }
-  }, [status?.country_tag])
 
   // Fields for current category
   const categoryFields = useMemo(
@@ -59,23 +52,43 @@ export default function ChartsTab({ snapshots, status }) {
     return Array.from(tagSet).sort()
   }, [snapshots])
 
+  const metaMap = useCountryNames()
+  const currentFieldDef = fields.find((f) => f.key === selectedField)
+
   // Transform snapshots into Recharts data: [{ date, FRA: 123, ENG: 456 }, ...]
+  // For TAG-switched countries (e.g. SWI from BRN), transparently fall back to the
+  // previous TAG's data in snapshots that predate the formation.
   const chartData = useMemo(() => {
     if (!selectedField || selectedCountries.length === 0) return []
     return snapshots.map((snap) => {
       const point = { date: snap.game_date || '' }
       selectedCountries.forEach((tag) => {
-        const countryData = snap.countries?.[tag]
+        let countryData = snap.countries?.[tag]
+        // Fall back to predecessor tags when the current tag has no data yet
+        if (!countryData) {
+          const prevTags = metaMap[tag]?.prevTags || []
+          for (const pt of prevTags) {
+            if (snap.countries?.[pt]) { countryData = snap.countries[pt]; break }
+          }
+        }
         if (countryData && selectedField in countryData) {
           point[tag] = countryData[selectedField]
         }
       })
       return point
     })
-  }, [snapshots, selectedField, selectedCountries])
+  }, [snapshots, selectedField, selectedCountries, metaMap])
 
-  const currentFieldDef = fields.find((f) => f.key === selectedField)
-  const nameMap = useCountryNames()
+  // Find the snapshot date when each selected country first appears (= TAG-switch moment)
+  const tagSwitchDates = useMemo(() => {
+    const result = {}
+    for (const tag of selectedCountries) {
+      if (!(metaMap[tag]?.prevTags?.length)) continue
+      const switchSnap = snapshots.find((s) => s.countries?.[tag])
+      if (switchSnap) result[tag] = switchSnap.game_date
+    }
+    return result
+  }, [snapshots, selectedCountries, metaMap])
 
   return (
     <div className="p-6 space-y-4">
@@ -125,7 +138,7 @@ export default function ChartsTab({ snapshots, status }) {
       <CountryPicker
         available={availableCountries}
         selected={selectedCountries}
-        onChange={setSelectedCountries}
+        onChange={onSelectedCountriesChange}
       />
 
       {/* Chart */}
@@ -165,13 +178,34 @@ export default function ChartsTab({ snapshots, status }) {
                   key={tag}
                   type="monotone"
                   dataKey={tag}
-                  name={fmtCountry(tag, nameMap)}
-                  stroke={LINE_COLORS[i % LINE_COLORS.length]}
+                  name={fmtCountry(tag, metaMap, { showPrev: false })}
+                  stroke={countryColor(tag, metaMap, FALLBACK_COLORS[i % FALLBACK_COLORS.length])}
                   strokeWidth={2}
                   dot={false}
                   connectNulls
                 />
               ))}
+              {/* TAG-switch reference lines — one vertical marker per switch event */}
+              {Object.entries(tagSwitchDates).map(([tag, date]) => {
+                const prevLabel = (metaMap[tag]?.prevTags || []).join('+')
+                const color = countryColor(tag, metaMap, '#6b7280')
+                return (
+                  <ReferenceLine
+                    key={`switch-${tag}`}
+                    x={date}
+                    stroke={color}
+                    strokeDasharray="4 3"
+                    strokeOpacity={0.7}
+                    label={{
+                      value: `${prevLabel} → ${tag}`,
+                      position: 'insideTopRight',
+                      fontSize: 10,
+                      fill: color,
+                      offset: 4,
+                    }}
+                  />
+                )
+              })}
             </LineChart>
           </ResponsiveContainer>
         </div>

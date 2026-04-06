@@ -18,6 +18,7 @@ export function useWebSocket(enabled = true) {
   const [status, setStatus] = useState(null)
   const [snapshots, setSnapshots] = useState([])
   const [events, setEvents] = useState([])
+  const [backfillProgress, setBackfillProgress] = useState(null)
 
   const connect = useCallback(() => {
     if (!enabled) return
@@ -67,6 +68,9 @@ export function useWebSocket(enabled = true) {
               setEvents((prev) => [...prev, ...msg.data])
             }
             break
+          case 'backfill_progress':
+            setBackfillProgress(msg.data)
+            break
         }
       } catch {
         // ignore malformed messages
@@ -90,5 +94,5 @@ export function useWebSocket(enabled = true) {
     setEvents([])
   }, [])
 
-  return { connected, lastMessage, status, snapshots, events, clearHistory }
+  return { connected, lastMessage, status, snapshots, events, backfillProgress, clearHistory }
 }

@@ -83,6 +83,12 @@ export function useApi() {
     loadPlaythrough: (game, playthroughId) =>
       request('POST', '/api/load-playthrough', { game, playthrough_id: playthroughId }),
 
+    /** POST /api/playthroughs/:id/backfill — import historical saves */
+    startBackfill: (playthroughId, { save_directory, game_install_path, language, game } = {}) =>
+      request('POST', `/api/playthroughs/${playthroughId}/backfill`, {
+        save_directory, game_install_path, language, game,
+      }),
+
     // ── Religions ───────────────────────────────────────────────
     /** GET /api/religions/:id — static religion records */
     getReligions: (playthroughId) =>

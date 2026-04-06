@@ -39,6 +39,7 @@ from backend.api.schemas import (
     StartRequest, StatusResponse, PlaythroughResponse,
     SnapshotResponse, EventResponse, FieldDefResponse, WsMessage,
     UpdateAarNoteRequest, SavedConfig, LoadPlaythroughRequest,
+    BackfillRequest,
     ReligionResponse, ReligionSnapshotResponse,
     WarResponse, WarSnapshotResponse, WarParticipantResponse,
     LocationResponse, LocationSnapshotResponse,
@@ -46,7 +47,7 @@ from backend.api.schemas import (
     PopSnapshotResponse, PopAggregateResponse,
 )
 from backend.config import SessionConfig
-from backend.parser.eu5.field_catalog import FIELD_CATALOG
+from backend.parser.eu5.field_catalog import FIELD_CATALOG, get_default_fields
 from backend.parser.eu5.events import GameEvent
 from backend.storage.database import Database
 from backend.watcher.pipeline import WatcherPipeline
@@ -736,6 +737,83 @@ async def load_playthrough(req: LoadPlaythroughRequest) -> dict:
         "snapshot_count": snap_count,
         "event_count": evt_count,
     }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/playthroughs/{playthrough_id}/backfill
+# ---------------------------------------------------------------------------
+
+@router.post("/api/playthroughs/{playthrough_id}/backfill", status_code=202)
+async def backfill_playthrough(
+    playthrough_id: str,
+    req: BackfillRequest,
+) -> dict:
+    """
+    Scan save_directory for .eu5 files belonging to playthrough_id and import
+    any not already in the database.  Runs as a background asyncio task and
+    sends progress updates via WebSocket (type = "backfill_progress").
+    """
+    from backend.watcher.backfill import run_backfill
+
+    db = await _get_db()
+
+    save_folder = Path(req.save_directory)
+    if not save_folder.exists():
+        raise HTTPException(400, f"Save directory not found: {save_folder}")
+
+    # --- Resolve config: prefer running pipeline, fall back to saved config ---
+    if _pipeline and _pipeline.is_running:
+        rakaly_bin = _pipeline.config.rakaly_bin
+        loc_dir = _pipeline.config.loc_dir
+        enabled_fields = _pipeline._enabled_fields
+    else:
+        rakaly_bin = Path("bin/rakaly/rakaly")
+        # Build loc_dir from provided install path (or saved config)
+        install_path_str = req.game_install_path
+        if not install_path_str:
+            saved_cfg = _load_config(req.game)
+            install_path_str = saved_cfg.game_install_path if saved_cfg else ""
+        if install_path_str:
+            loc_dir = Path(install_path_str) / "game" / "main_menu" / "localization" / req.language
+        else:
+            loc_dir = None
+
+        # Use enabled fields from saved config, else defaults
+        saved_cfg = _load_config(req.game)
+        if saved_cfg and saved_cfg.enabled_field_keys:
+            enabled_fields = [f for f in FIELD_CATALOG if f.key in saved_cfg.enabled_field_keys]
+        else:
+            enabled_fields = get_default_fields()
+
+    # --- Broadcast helper (called from async task on same event loop) ---
+    async def _broadcast_progress(data: dict) -> None:
+        await _broadcast(WsMessage(type="backfill_progress", data=data))
+
+    # --- Launch as background asyncio task ---
+    async def _run_task() -> None:
+        try:
+            await run_backfill(
+                playthrough_id=playthrough_id,
+                save_folder=save_folder,
+                db=db,
+                rakaly_bin=rakaly_bin,
+                loc_dir=loc_dir,
+                enabled_fields=enabled_fields,
+                broadcast_fn=_broadcast_progress,
+            )
+        except Exception:
+            logger.exception("Backfill task failed unexpectedly")
+            await _broadcast(WsMessage(type="backfill_progress", data={
+                "done": True, "error": "Backfill failed — check server logs.",
+                "total": 0, "processed": 0, "matched": 0,
+                "added": 0, "skipped": 0, "errors": 1,
+                "current_file": "",
+            }))
+
+    asyncio.create_task(_run_task())
+
+    logger.info(f"Backfill started for playthrough {playthrough_id[:8]}... in {save_folder}")
+    return {"status": "started", "playthrough_id": playthrough_id}
 
 
 # ---------------------------------------------------------------------------

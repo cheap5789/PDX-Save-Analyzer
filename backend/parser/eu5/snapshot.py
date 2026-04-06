@@ -98,6 +98,19 @@ def extract_snapshot(
                 name = save.country_display_name(tag)
                 if name and name != tag:
                     row["_name"] = name
+            # Embed country color as a CSS hex string for consistent UI coloring.
+            color_obj = cdata.get("color", {})
+            if isinstance(color_obj, dict):
+                rgb = color_obj.get("rgb")
+                if isinstance(rgb, list) and len(rgb) >= 3:
+                    r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+                    row["_color"] = f"#{r:02x}{g:02x}{b:02x}"
+            # Embed previous TAGs so the frontend can stitch TAG-switch series together.
+            prev_tags = cdata.get("previous_tags")
+            if isinstance(prev_tags, list) and prev_tags:
+                row["_prev_tags"] = prev_tags
+            elif isinstance(prev_tags, str):
+                row["_prev_tags"] = [prev_tags]
             countries[tag] = row
 
     return {

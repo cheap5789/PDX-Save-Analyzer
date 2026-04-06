@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useCountryNames } from '../contexts/CountryNamesContext'
-import { fmtCountry } from '../utils/formatters'
+import { fmtCountry, countryColor } from '../utils/formatters'
 
 /**
  * CountryPicker — checkbox list of country tags.
@@ -16,9 +16,12 @@ export default function CountryPicker({ available = [], selected = [], onChange,
 
   const filtered = available.filter((tag) => {
     const q = search.toLowerCase()
+    const meta = nameMap[tag] || {}
     return (
       tag.toLowerCase().includes(q) ||
-      (nameMap[tag] || '').toLowerCase().includes(q)
+      (meta.name || '').toLowerCase().includes(q) ||
+      // Also match if the user types an old TAG (e.g. "BRN" to find Switzerland/SWI)
+      (meta.prevTags || []).some((pt) => pt.toLowerCase().includes(q))
     )
   })
 
@@ -54,17 +57,28 @@ export default function CountryPicker({ available = [], selected = [], onChange,
       <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto">
         {filtered.map((tag) => {
           const active = selected.includes(tag)
+          const saveColor = countryColor(tag, nameMap, null)
           return (
             <button
               key={tag}
               onClick={() => toggle(tag)}
-              className="px-2 py-0.5 text-xs rounded transition-colors"
+              className="flex items-center gap-1.5 px-2 py-0.5 text-xs rounded transition-colors"
               style={{
-                background: active ? 'var(--color-accent)' : 'var(--color-surface-alt)',
+                background: active
+                  ? (saveColor ?? 'var(--color-accent)')
+                  : 'var(--color-surface-alt)',
                 color: active ? '#fff' : 'var(--color-text-muted)',
-                border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                border: `1px solid ${active
+                  ? (saveColor ?? 'var(--color-accent)')
+                  : 'var(--color-border)'}`,
               }}
             >
+              {saveColor && !active && (
+                <span
+                  className="inline-block w-2 h-2 rounded-sm shrink-0"
+                  style={{ background: saveColor }}
+                />
+              )}
               {fmtCountry(tag, nameMap)}
             </button>
           )

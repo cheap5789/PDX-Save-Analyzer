@@ -14,7 +14,7 @@ const FIELD_CATEGORIES = [
   'religion', 'score', 'demographics', 'technology',
 ]
 
-export default function ConfigTab({ status, onStatusChange }) {
+export default function ConfigTab({ status, onStatusChange, backfillProgress }) {
   const api = useApi()
   const game = 'eu5' // hardcoded for now — game-dependent
 
@@ -34,6 +34,10 @@ export default function ConfigTab({ status, onStatusChange }) {
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(null)
   const [loading, setLoading] = useState(false)
+
+  // Backfill state
+  const [backfillRunning, setBackfillRunning] = useState(false)
+  const [backfillError, setBackfillError] = useState(null)
 
   // Load field catalog, saved config, and existing playthroughs on mount
   useEffect(() => {
@@ -148,6 +152,31 @@ export default function ConfigTab({ status, onStatusChange }) {
 
   const selectAll = () => setConfig((prev) => ({ ...prev, enabled_field_keys: fields.map((f) => f.key) }))
   const selectNone = () => setConfig((prev) => ({ ...prev, enabled_field_keys: [] }))
+
+  // Watch for backfill completion via WS progress
+  useEffect(() => {
+    if (backfillProgress?.done) {
+      setBackfillRunning(false)
+    }
+  }, [backfillProgress?.done])
+
+  const handleBackfill = async () => {
+    if (!status?.playthrough_id || !config.save_directory) return
+    setBackfillError(null)
+    setBackfillRunning(true)
+    try {
+      await api.startBackfill(status.playthrough_id, {
+        save_directory: config.save_directory,
+        game_install_path: config.game_install_path,
+        language: config.language,
+        game: config.game,
+      })
+      // Progress will arrive via WS backfillProgress prop
+    } catch (e) {
+      setBackfillError(e.message)
+      setBackfillRunning(false)
+    }
+  }
 
   const inputStyle = {
     background: 'var(--color-surface-alt)',
@@ -315,6 +344,81 @@ export default function ConfigTab({ status, onStatusChange }) {
               Load
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Import Historical Saves */}
+      {status?.playthrough_id && (
+        <div className="rounded-lg p-4" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <div className="text-sm font-medium">Import Historical Saves</div>
+              <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
+                Scan the save folder for existing saves belonging to this playthrough and add them to the database.
+              </div>
+            </div>
+            <button
+              onClick={handleBackfill}
+              disabled={backfillRunning || !config.save_directory}
+              className="ml-4 px-4 py-1.5 rounded text-sm font-medium text-white shrink-0"
+              style={{
+                background: backfillRunning || !config.save_directory
+                  ? 'var(--color-surface-alt)'
+                  : 'var(--color-accent)',
+                color: backfillRunning || !config.save_directory ? 'var(--color-text-muted)' : '#fff',
+                cursor: backfillRunning || !config.save_directory ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {backfillRunning ? 'Scanning…' : 'Start Import'}
+            </button>
+          </div>
+
+          {/* Progress */}
+          {(backfillRunning || backfillProgress) && (
+            <div className="mt-3 space-y-2">
+              {/* Progress bar */}
+              {backfillProgress && backfillProgress.total > 0 && (
+                <div className="w-full rounded-full h-1.5" style={{ background: 'var(--color-surface-alt)' }}>
+                  <div
+                    className="h-1.5 rounded-full transition-all"
+                    style={{
+                      background: backfillProgress.done ? 'var(--color-success)' : 'var(--color-accent)',
+                      width: `${Math.round(((backfillProgress.processed || 0) / backfillProgress.total) * 100)}%`,
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Current file */}
+              {backfillProgress?.current_file && !backfillProgress.done && (
+                <div className="text-xs truncate" style={{ color: 'var(--color-text-muted)' }}>
+                  {backfillProgress.current_file}
+                </div>
+              )}
+
+              {/* Stats row */}
+              {backfillProgress && (
+                <div className="flex gap-4 text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  <span>{backfillProgress.processed ?? 0} / {backfillProgress.total ?? 0} files</span>
+                  <span style={{ color: 'var(--color-success)' }}>{backfillProgress.added ?? 0} added</span>
+                  <span>{backfillProgress.skipped ?? 0} already in DB</span>
+                  {(backfillProgress.errors ?? 0) > 0 && (
+                    <span style={{ color: 'var(--color-danger)' }}>{backfillProgress.errors} errors</span>
+                  )}
+                  {backfillProgress.done && (
+                    <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>Done</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Backfill error */}
+          {backfillError && (
+            <div className="mt-2 text-xs rounded p-2" style={{ background: 'rgba(239,68,68,0.15)', color: 'var(--color-danger)' }}>
+              {backfillError}
+            </div>
+          )}
         </div>
       )}
 

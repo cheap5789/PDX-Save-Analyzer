@@ -45,6 +45,14 @@ class LoadPlaythroughRequest(BaseModel):
     playthrough_id: str
 
 
+class BackfillRequest(BaseModel):
+    """POST /api/playthroughs/{id}/backfill — scan save folder and import historical saves."""
+    save_directory: str                # Path to scan for .eu5 files
+    game_install_path: str = ""        # Used to locate localisation files; optional
+    language: str = "english"         # Localisation subfolder name
+    game: str = "eu5"                  # Which game DB to write into
+
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------

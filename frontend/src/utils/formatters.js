@@ -64,15 +64,31 @@ export function fmtFieldValue(value, fieldDef) {
 
 /**
  * Format a country tag with its localised name: "France (FRA)".
+ * For TAG-switched nations also appends the predecessor: "Switzerland (SWI, ex-BRN)".
  * Falls back to just the raw tag when no name is available or the name equals the tag.
  *
- * @param {string} tag          - Raw country TAG (e.g. "FRA")
- * @param {Record<string,string>} nameMap - tag → display name lookup (from CountryNamesContext)
+ * @param {string} tag     - Raw country TAG (e.g. "SWI")
+ * @param {Record<string,{name?:string,color?:string,prevTags?:string[]}>} metaMap
+ * @param {{ showPrev?: boolean }} opts  - showPrev defaults to true
  * @returns {string}
  */
-export function fmtCountry(tag, nameMap) {
+export function fmtCountry(tag, metaMap, { showPrev = true } = {}) {
   if (!tag) return ''
-  const name = nameMap?.[tag]
-  if (!name || name === tag) return tag
-  return `${name} (${tag})`
+  const meta  = metaMap?.[tag]
+  const name  = meta?.name
+  const prev  = showPrev && meta?.prevTags?.length ? meta.prevTags.join('+') : null
+  const label = name && name !== tag ? `${name} (${tag})` : tag
+  return prev ? `${label}, ex-${prev}` : label
+}
+
+/**
+ * Return the save-defined CSS color for a country tag, or a fallback.
+ *
+ * @param {string} tag
+ * @param {Record<string,{name?:string,color?:string}>} metaMap
+ * @param {string} fallback - CSS color to use when no color is known
+ * @returns {string}
+ */
+export function countryColor(tag, metaMap, fallback = '#6b7280') {
+  return metaMap?.[tag]?.color ?? fallback
 }
