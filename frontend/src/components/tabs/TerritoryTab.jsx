@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useApi } from '../../hooks/useApi'
+import { usePerfTracker } from '../../hooks/usePerfTracker'
 
 const RANK_COLORS = {
   city: '#f59e0b',
@@ -17,6 +18,7 @@ const INTEGRATION_COLORS = {
 
 export default function TerritoryTab({ status }) {
   const api = useApi()
+  const { track, fmt } = usePerfTracker('territory')
   const [locationData, setLocationData] = useState([])
   const [sortField, setSortField] = useState('development')
   const [sortDir, setSortDir] = useState('desc')
@@ -29,10 +31,10 @@ export default function TerritoryTab({ status }) {
   useEffect(() => {
     if (!ptId) return
     let cancelled = false
-    api.getSnapshots(ptId, { limit: 1 }).catch(() => []).then((apiSnaps) => {
+    track('latest_snapshot', api.getSnapshots(ptId, { limit: 1 }).catch(() => [])).then((apiSnaps) => {
       if (cancelled || apiSnaps.length === 0) return
       const latestSnap = apiSnaps[apiSnaps.length - 1]
-      return api.getLocationSnapshots(ptId, { snapshot_id: latestSnap.id })
+      return track('locations', api.getLocationSnapshots(ptId, { snapshot_id: latestSnap.id }))
     }).then((locs) => {
       if (!cancelled && locs) setLocationData(locs)
     }).catch(() => {})
@@ -58,7 +60,7 @@ export default function TerritoryTab({ status }) {
   }, [locationData])
 
   // Filter + sort
-  const displayData = useMemo(() => {
+  const displayData = useMemo(() => fmt('filter_sort', () => {
     let data = [...locationData]
 
     if (filterRank !== 'all') {
@@ -83,7 +85,7 @@ export default function TerritoryTab({ status }) {
     })
 
     return data
-  }, [locationData, filterRank, filterIntegration, searchText, sortField, sortDir])
+  }), [locationData, filterRank, filterIntegration, searchText, sortField, sortDir])
 
   const handleSort = (field) => {
     if (sortField === field) {

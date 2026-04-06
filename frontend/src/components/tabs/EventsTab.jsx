@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from 'react'
 import EventCard from '../EventCard'
 import { useCountryNames } from '../../contexts/CountryNamesContext'
 import { fmtCountry } from '../../utils/formatters'
+import { usePerfTracker } from '../../hooks/usePerfTracker'
 
 const EVENT_TYPES = [
   'all',
@@ -28,6 +29,8 @@ const EVENT_TYPES = [
  *     country filter is active)
  */
 export default function EventsTab({ events: allEvents, onEventNoteUpdated }) {
+  usePerfTracker('events')  // registers tab activation; data comes from App.jsx props
+
   // ── Event-type filter (single-select) ──────────────────────────────────
   const [typeFilter, setTypeFilter] = useState('all')
 

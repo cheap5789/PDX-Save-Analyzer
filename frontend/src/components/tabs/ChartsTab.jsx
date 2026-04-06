@@ -7,6 +7,7 @@ import { useApi } from '../../hooks/useApi'
 import CountryPicker from '../CountryPicker'
 import { fmtValue, fmtAxisTick, fmtCountry, countryColor } from '../../utils/formatters'
 import { useCountryNames } from '../../contexts/CountryNamesContext'
+import { usePerfTracker } from '../../hooks/usePerfTracker'
 
 // Fallback palette used when a country has no save-defined color
 const FALLBACK_COLORS = [
@@ -21,13 +22,14 @@ const FIELD_CATEGORIES = [
 
 export default function ChartsTab({ snapshots, selectedCountries, onSelectedCountriesChange }) {
   const api = useApi()
+  const { track, fmt } = usePerfTracker('charts')
   const [fields, setFields] = useState([])
   const [selectedCategory, setSelectedCategory] = useState('economy')
   const [selectedField, setSelectedField] = useState(null)
 
   // Load field catalog
   useEffect(() => {
-    api.getFields().then(setFields).catch(() => {})
+    track('fields', api.getFields()).then(setFields).catch(() => {})
   }, [])
 
   // Fields for current category
@@ -58,7 +60,7 @@ export default function ChartsTab({ snapshots, selectedCountries, onSelectedCoun
   // Transform snapshots into Recharts data: [{ date, FRA: 123, ENG: 456 }, ...]
   // For TAG-switched countries (e.g. SWI from BRN), transparently fall back to the
   // previous TAG's data in snapshots that predate the formation.
-  const chartData = useMemo(() => {
+  const chartData = useMemo(() => fmt('chart_data', () => {
     if (!selectedField || selectedCountries.length === 0) return []
     return snapshots.map((snap) => {
       const point = { date: snap.game_date || '' }
@@ -77,7 +79,7 @@ export default function ChartsTab({ snapshots, selectedCountries, onSelectedCoun
       })
       return point
     })
-  }, [snapshots, selectedField, selectedCountries, metaMap])
+  }), [snapshots, selectedField, selectedCountries, metaMap])
 
   // Find the snapshot date when each selected country first appears (= TAG-switch moment)
   const tagSwitchDates = useMemo(() => {

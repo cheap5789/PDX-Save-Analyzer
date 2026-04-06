@@ -2,8 +2,10 @@ import StatusCard from '../StatusCard'
 import EventCard from '../EventCard'
 import { useCountryNames } from '../../contexts/CountryNamesContext'
 import { fmtCountry } from '../../utils/formatters'
+import { usePerfTracker } from '../../hooks/usePerfTracker'
 
 export default function OverviewTab({ status, snapshots, events }) {
+  usePerfTracker('overview')  // registers tab activation; data comes from App.jsx props
   // Latest snapshot: last item in the array
   const latestSnapshot = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null
 

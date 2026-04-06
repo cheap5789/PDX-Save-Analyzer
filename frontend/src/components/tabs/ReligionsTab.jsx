@@ -3,6 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 import { useApi } from '../../hooks/useApi'
+import { usePerfTracker } from '../../hooks/usePerfTracker'
 
 const LINE_COLORS = [
   '#3b82f6', '#ef4444', '#22c55e', '#f59e0b',
@@ -11,6 +12,7 @@ const LINE_COLORS = [
 
 export default function ReligionsTab({ status }) {
   const api = useApi()
+  const { track } = usePerfTracker('religions')
   const [religions, setReligions] = useState([])
   const [snapshots, setSnapshots] = useState([])
   const [selectedField, setSelectedField] = useState('reform_desire')
@@ -24,8 +26,8 @@ export default function ReligionsTab({ status }) {
     if (!ptId) return
     let cancelled = false
     Promise.all([
-      api.getReligions(ptId).catch(() => []),
-      api.getReligionSnapshots(ptId).catch(() => []),
+      track('religions', api.getReligions(ptId).catch(() => [])),
+      track('rel_snapshots', api.getReligionSnapshots(ptId).catch(() => [])),
     ]).then(([rels, snaps]) => {
       if (cancelled) return
       setReligions(rels)

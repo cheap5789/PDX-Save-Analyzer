@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useApi } from './hooks/useApi'
 import { useWebSocket } from './hooks/useWebSocket'
 import { CountryNamesContext } from './contexts/CountryNamesContext'
+import { PerfProvider } from './contexts/PerfContext'
+import PerfPanel from './components/PerfPanel'
 import TabBar from './components/TabBar'
 import OverviewTab from './components/tabs/OverviewTab'
 import ChartsTab from './components/tabs/ChartsTab'
@@ -17,6 +19,9 @@ export default function App() {
   const { connected, status: wsStatus, snapshots: liveSnapshots, events: liveEvents, backfillProgress, clearHistory } = useWebSocket()
   const [activeTab, setActiveTab] = useState('overview')
   const [restStatus, setRestStatus] = useState(null)
+
+  // Perf panel — hidden by default, persists across tab navigation
+  const [perfOpen, setPerfOpen] = useState(false)
 
   // Historical data loaded from REST (browse mode or pipeline reconnect)
   const [historicalSnapshots, setHistoricalSnapshots] = useState([])
@@ -160,49 +165,80 @@ export default function App() {
   }, [clearHistory, fetchPlaythroughData])
 
   return (
+    <PerfProvider>
     <CountryNamesContext.Provider value={tagMetaMap}>
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--color-bg)' }}>
+
       {/* Header */}
-      <header className="px-6 pt-4 pb-0">
+      <header className="px-6 pt-4 pb-0 flex items-center justify-between">
         <h1 className="text-xl font-bold tracking-tight">PDX Save Analyzer</h1>
+        {/* Perf panel toggle */}
+        <button
+          onClick={() => setPerfOpen((v) => !v)}
+          title="Toggle performance monitor"
+          style={{
+            background: perfOpen ? 'var(--color-accent)' : 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 6,
+            padding: '3px 9px',
+            cursor: 'pointer',
+            fontSize: 13,
+            color: perfOpen ? '#fff' : 'var(--color-text-muted)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            transition: 'background 0.15s, color 0.15s',
+          }}
+        >
+          <span>⏱</span>
+          <span style={{ fontSize: 11, fontWeight: 500 }}>Perf</span>
+        </button>
       </header>
 
       {/* Tab bar with connection indicator */}
       <TabBar active={activeTab} onChange={setActiveTab} connected={connected} />
 
-      {/* Tab content */}
-      <main className="flex-1 overflow-y-auto">
-        {activeTab === 'overview' && (
-          <OverviewTab status={status} snapshots={allSnapshots} events={allEvents} />
-        )}
-        {activeTab === 'charts' && (
-          <ChartsTab
-            snapshots={allSnapshots}
-            status={status}
-            selectedCountries={selectedCountries}
-            onSelectedCountriesChange={setSelectedCountries}
-          />
-        )}
-        {activeTab === 'events' && (
-          <EventsTab events={allEvents} status={status} onEventNoteUpdated={handleEventNoteUpdated} />
-        )}
-        {activeTab === 'religions' && (
-          <ReligionsTab status={status} />
-        )}
-        {activeTab === 'wars' && (
-          <WarsTab status={status} />
-        )}
-        {activeTab === 'territory' && (
-          <TerritoryTab status={status} />
-        )}
-        {activeTab === 'demographics' && (
-          <DemographicsTab status={status} />
-        )}
-        {activeTab === 'config' && (
-          <ConfigTab status={status} onStatusChange={handleStatusChange} backfillProgress={backfillProgress} />
-        )}
-      </main>
+      {/* Main content + optional perf panel side-by-side */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+        {/* Tab content */}
+        <main style={{ flex: 1, overflowY: 'auto' }}>
+          {activeTab === 'overview' && (
+            <OverviewTab status={status} snapshots={allSnapshots} events={allEvents} />
+          )}
+          {activeTab === 'charts' && (
+            <ChartsTab
+              snapshots={allSnapshots}
+              status={status}
+              selectedCountries={selectedCountries}
+              onSelectedCountriesChange={setSelectedCountries}
+            />
+          )}
+          {activeTab === 'events' && (
+            <EventsTab events={allEvents} status={status} onEventNoteUpdated={handleEventNoteUpdated} />
+          )}
+          {activeTab === 'religions' && (
+            <ReligionsTab status={status} />
+          )}
+          {activeTab === 'wars' && (
+            <WarsTab status={status} />
+          )}
+          {activeTab === 'territory' && (
+            <TerritoryTab status={status} />
+          )}
+          {activeTab === 'demographics' && (
+            <DemographicsTab status={status} />
+          )}
+          {activeTab === 'config' && (
+            <ConfigTab status={status} onStatusChange={handleStatusChange} backfillProgress={backfillProgress} />
+          )}
+        </main>
+
+        {/* Perf panel — persists across tab navigation */}
+        {perfOpen && <PerfPanel onClose={() => setPerfOpen(false)} />}
+      </div>
+
     </div>
     </CountryNamesContext.Provider>
+    </PerfProvider>
   )
 }

@@ -5,11 +5,13 @@ import {
 import { useApi } from '../../hooks/useApi'
 import { useCountryNames } from '../../contexts/CountryNamesContext'
 import { fmtCountry } from '../../utils/formatters'
+import { usePerfTracker } from '../../hooks/usePerfTracker'
 
 const SIDE_COLORS = { Attacker: '#ef4444', Defender: '#3b82f6' }
 
 export default function WarsTab({ status }) {
   const api = useApi()
+  const { track, fmt } = usePerfTracker('wars')
   const [wars, setWars] = useState([])
   const [selectedWarId, setSelectedWarId] = useState(null)
   const [warSnapshots, setWarSnapshots] = useState([])
@@ -22,7 +24,7 @@ export default function WarsTab({ status }) {
   useEffect(() => {
     if (!ptId) return
     let cancelled = false
-    api.getWars(ptId).then((w) => {
+    track('wars', api.getWars(ptId)).then((w) => {
       if (cancelled) return
       setWars(w)
       // Auto-select first active war
@@ -37,8 +39,8 @@ export default function WarsTab({ status }) {
   useEffect(() => {
     if (!ptId || !selectedWarId) return
     Promise.all([
-      api.getWarSnapshots(ptId, { war_id: selectedWarId }).catch(() => []),
-      api.getWarParticipants(ptId, { war_id: selectedWarId }).catch(() => []),
+      track('war_snapshots', api.getWarSnapshots(ptId, { war_id: selectedWarId }).catch(() => [])),
+      track('participants', api.getWarParticipants(ptId, { war_id: selectedWarId }).catch(() => [])),
     ]).then(([snaps, parts]) => {
       setWarSnapshots(snaps)
       setParticipants(parts)
@@ -53,12 +55,12 @@ export default function WarsTab({ status }) {
 
   // War score chart data
   const chartData = useMemo(() => {
-    return warSnapshots.map((s) => ({
+    return fmt('chart_data', () => warSnapshots.map((s) => ({
       date: s.game_date,
       'Attacker Score': s.attacker_score || 0,
       'Defender Score': s.defender_score || 0,
       'Net Score': s.net_war_score || 0,
-    }))
+    })))
   }, [warSnapshots])
 
   // Current selected war

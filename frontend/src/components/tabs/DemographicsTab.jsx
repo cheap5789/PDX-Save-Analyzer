@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell,
 } from 'recharts'
 import { useApi } from '../../hooks/useApi'
+import { usePerfTracker } from '../../hooks/usePerfTracker'
 
 const TYPE_COLORS = {
   peasants: '#22c55e',
@@ -32,6 +33,7 @@ const GROUP_BY_OPTIONS = [
 
 export default function DemographicsTab({ status }) {
   const api = useApi()
+  const { track, fmt } = usePerfTracker('demographics')
   const [groupBy, setGroupBy] = useState('type')
   const [aggregates, setAggregates] = useState([])
   const [loading, setLoading] = useState(false)
@@ -43,7 +45,7 @@ export default function DemographicsTab({ status }) {
   useEffect(() => {
     if (!ptId) return
     let cancelled = false
-    api.getPopAggregates(ptId, { group_by: groupBy })
+    track(`pop_aggregates(${groupBy})`, api.getPopAggregates(ptId, { group_by: groupBy }))
       .then((data) => { if (!cancelled) setAggregates(data) })
       .catch(() => { if (!cancelled) setAggregates([]) })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -66,7 +68,7 @@ export default function DemographicsTab({ status }) {
   }, [aggregates, groupBy])
 
   // Stacked area chart data: [{ date, peasants: 1234, clergy: 456, ... }, ...]
-  const trendData = useMemo(() => {
+  const trendData = useMemo(() => fmt('trend_data', () => {
     if (dates.length === 0) return []
 
     const byDate = {}
@@ -81,7 +83,7 @@ export default function DemographicsTab({ status }) {
     })
 
     return Object.values(byDate)
-  }, [aggregates, dates, groupBy])
+  }), [aggregates, dates, groupBy])
 
   // Latest snapshot breakdown for pie chart
   const latestBreakdown = useMemo(() => {
