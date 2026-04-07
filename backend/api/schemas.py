@@ -336,6 +336,101 @@ class CountryResponse(BaseModel):
     canonical_tag: str                   # terminal successor tag (self if no successor)
 
 
+class BattleResponse(BaseModel):
+    """Detailed battle record."""
+    id: int
+    playthrough_id: str
+    war_id: str
+    game_date: str
+    location_id: int | None = None
+    is_land: bool = True
+    war_attacker_win: bool | None = None
+    war_score_delta: float | None = None
+    attacker_country_id: int | None = None
+    attacker_character_id: int | None = None
+    attacker_forces: list | None = None       # 8-slot array (parsed from JSON)
+    attacker_losses: list | None = None
+    attacker_imprisoned: list | None = None
+    attacker_tradition: float | None = None
+    attacker_experience: float | None = None
+    defender_country_id: int | None = None
+    defender_character_id: int | None = None
+    defender_forces: list | None = None
+    defender_losses: list | None = None
+    defender_imprisoned: list | None = None
+    defender_tradition: float | None = None
+    defender_experience: float | None = None
+    detected_at_snapshot_id: int | None = None
+
+
+class SiegeResponse(BaseModel):
+    """Siege lifecycle record."""
+    id: int
+    siege_game_id: str
+    playthrough_id: str
+    location_id: int | None = None
+    war_id: str | None = None
+    attacker_country_ids: list | None = None  # parsed from JSON
+    defender_country_id: int | None = None
+    first_seen_date: str | None = None
+    last_seen_date: str | None = None
+    first_seen_snapshot_id: int | None = None
+    last_seen_snapshot_id: int | None = None
+    max_besieging_total: float = 0
+    last_siege_day: int | None = None
+    last_duration: int | None = None
+    last_morale: float | None = None
+    last_siege_dice: int | None = None
+    last_siege_status: str | None = None
+    is_active: bool = True
+
+
+class WarParticipantSnapshotResponse(BaseModel):
+    """Per-participant score + losses at a snapshot date."""
+    id: int
+    playthrough_id: str
+    war_id: str
+    country_id: int
+    country_tag: str | None = None
+    snapshot_id: int
+    game_date: str
+    side: str
+    score_combat: float = 0
+    score_siege: float = 0
+    score_joining: float = 0
+    losses_json: str | None = None          # raw JSON string; frontend parses if needed
+
+
+class CountryMilitarySnapshotResponse(BaseModel):
+    """Regiment counts + strengths per country at a snapshot date."""
+    id: int
+    playthrough_id: str
+    country_id: int
+    country_tag: str | None = None
+    snapshot_id: int
+    game_date: str
+    infantry_count: int = 0
+    infantry_strength: float = 0
+    cavalry_count: int = 0
+    cavalry_strength: float = 0
+    artillery_count: int = 0
+    artillery_strength: float = 0
+    auxiliary_count: int = 0
+    auxiliary_strength: float = 0
+    galley_count: int = 0
+    galley_strength: float = 0
+    light_ship_count: int = 0
+    light_ship_strength: float = 0
+    transport_count: int = 0
+    transport_strength: float = 0
+    heavy_ship_count: int = 0
+    heavy_ship_strength: float = 0
+    army_count: int = 0
+    army_strength: float = 0
+    navy_count: int = 0
+    navy_strength: float = 0
+
+
 # ---------------------------------------------------------------------------
 # WebSocket message types
 # ---------------------------------------------------------------------------

@@ -43,6 +43,8 @@ from backend.api.schemas import (
     ReligionResponse, ReligionSnapshotResponse,
     CultureResponse,
     WarResponse, WarSnapshotResponse, WarParticipantResponse,
+    BattleResponse, SiegeResponse,
+    WarParticipantSnapshotResponse, CountryMilitarySnapshotResponse,
     LocationResponse, LocationSnapshotResponse,
     ProvinceResponse, ProvinceSnapshotResponse,
     PopSnapshotResponse, PopAggregateResponse, PopCountryOwnerResponse,
@@ -491,6 +493,106 @@ async def get_war_participants(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/battles/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/api/battles/{playthrough_id}", response_model=list[BattleResponse])
+async def get_battles(
+    playthrough_id: str,
+    war_id: str | None = Query(None, description="Filter by war ID"),
+    from_date: str | None = Query(None, description="Earliest game date (inclusive)"),
+    to_date: str | None = Query(None, description="Latest game date (inclusive)"),
+) -> list[BattleResponse]:
+    """Battles for a playthrough, optionally filtered by war and date range."""
+    db = await _get_db()
+    rows = await db.get_battles(
+        playthrough_id, war_id=war_id, from_date=from_date, to_date=to_date,
+    )
+    result = []
+    for r in rows:
+        d = dict(r)
+        for key in ("attacker_forces", "attacker_losses", "attacker_imprisoned",
+                    "defender_forces", "defender_losses", "defender_imprisoned"):
+            if isinstance(d.get(key), str):
+                try:
+                    d[key] = json.loads(d[key])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        result.append(BattleResponse(**d))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/sieges/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/api/sieges/{playthrough_id}", response_model=list[SiegeResponse])
+async def get_sieges(
+    playthrough_id: str,
+    war_id: str | None = Query(None, description="Filter by war ID"),
+    active_only: bool = Query(False, description="Only return currently active sieges"),
+) -> list[SiegeResponse]:
+    """Siege records for a playthrough."""
+    db = await _get_db()
+    rows = await db.get_sieges(playthrough_id, war_id=war_id, active_only=active_only)
+    result = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("attacker_country_ids"), str):
+            try:
+                d["attacker_country_ids"] = json.loads(d["attacker_country_ids"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result.append(SiegeResponse(**d))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/wars/{playthrough_id}/participant-history
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/wars/{playthrough_id}/participant-history",
+    response_model=list[WarParticipantSnapshotResponse],
+)
+async def get_war_participant_history(
+    playthrough_id: str,
+    war_id: str | None = Query(None, description="Filter by war ID"),
+    country_tags: str | None = Query(None, description="Comma-separated country TAGs"),
+) -> list[WarParticipantSnapshotResponse]:
+    """Per-participant score + loss snapshots over time."""
+    db = await _get_db()
+    tags = [t.strip() for t in country_tags.split(",")] if country_tags else None
+    rows = await db.get_war_participant_snapshots(
+        playthrough_id, war_id=war_id, country_tags=tags,
+    )
+    return [WarParticipantSnapshotResponse(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/military/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/military/{playthrough_id}",
+    response_model=list[CountryMilitarySnapshotResponse],
+)
+async def get_military_snapshots(
+    playthrough_id: str,
+    country_tags: str | None = Query(None, description="Comma-separated country TAGs"),
+    from_date: str | None = Query(None, description="Earliest game date (inclusive)"),
+    to_date: str | None = Query(None, description="Latest game date (inclusive)"),
+) -> list[CountryMilitarySnapshotResponse]:
+    """Country regiment counts and strengths over time."""
+    db = await _get_db()
+    tags = [t.strip() for t in country_tags.split(",")] if country_tags else None
+    rows = await db.get_country_military_snapshots(
+        playthrough_id, country_tags=tags, from_date=from_date, to_date=to_date,
+    )
+    return [CountryMilitarySnapshotResponse(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # GET /api/locations/{playthrough_id}
 # ---------------------------------------------------------------------------
 
@@ -918,15 +1020,17 @@ async def backfill_playthrough(
     if not save_folder.exists():
         raise HTTPException(400, f"Save directory not found: {save_folder}")
 
-    # --- Resolve rakaly + loc_dir ---
+    # --- Resolve rakaly + loc_dir + game_install_path ---
     rakaly_bin = Path("bin/rakaly/rakaly")
     if _pipeline and _pipeline.is_running:
         loc_dir = _pipeline.config.loc_dir
+        game_install_path: Path | None = _pipeline.config.game_install_path
     else:
         install_path_str = req.game_install_path
         if not install_path_str:
             saved_cfg = _load_config(req.game)
             install_path_str = saved_cfg.game_install_path if saved_cfg else ""
+        game_install_path = Path(install_path_str) if install_path_str else None
         loc_dir = (
             Path(install_path_str) / "game" / "main_menu" / "localization" / req.language
             if install_path_str else None
@@ -963,6 +1067,7 @@ async def backfill_playthrough(
                 loc_dir=loc_dir,
                 enabled_fields=enabled_fields,
                 broadcast_fn=_broadcast_progress,
+                game_install_path=game_install_path,
             )
         except Exception:
             logger.exception("Backfill task failed unexpectedly")

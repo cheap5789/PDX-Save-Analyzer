@@ -27,6 +27,10 @@ Schema (tables, all prefixed with their group):
     wars                — static war metadata (written once on first sight)
     war_snapshots       — score progression at each snapshot date
     war_participants    — one row per country per war (status, losses, scores)
+    country_military_snapshots — regiment counts + strengths per country per snapshot
+    war_participant_snapshots  — scores + cumulative losses per participant per snapshot
+    battles             — one row per detected battle (insert-or-skip dedup)
+    sieges              — one row per siege lifecycle (upserted each snapshot)
 
   Geography:
     locations           — static location metadata (raw material, port, holy sites)
@@ -197,6 +201,126 @@ CREATE TABLE IF NOT EXISTS war_participants (
     io_id           INTEGER,                -- international_organization link (nullable)
     UNIQUE(playthrough_id, war_id, country_id)
 );
+
+-- ── Military / War extended tables ───────────────────────────────────
+
+-- Forces snapshot per country per snapshot.
+-- Only written for: (a) active war participants regardless of rank, and
+-- (b) peaceful countries with score_place <= 200.
+CREATE TABLE IF NOT EXISTS country_military_snapshots (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id      TEXT    NOT NULL REFERENCES playthroughs(id),
+    country_id          INTEGER NOT NULL,
+    country_tag         TEXT,
+    snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),
+    game_date           TEXT    NOT NULL,
+    -- Land forces by category (count = regiment count, strength = sum of current strengths)
+    infantry_count      INTEGER DEFAULT 0,
+    infantry_strength   REAL    DEFAULT 0,
+    cavalry_count       INTEGER DEFAULT 0,
+    cavalry_strength    REAL    DEFAULT 0,
+    artillery_count     INTEGER DEFAULT 0,
+    artillery_strength  REAL    DEFAULT 0,
+    auxiliary_count     INTEGER DEFAULT 0,
+    auxiliary_strength  REAL    DEFAULT 0,
+    -- Naval forces by category
+    galley_count        INTEGER DEFAULT 0,
+    galley_strength     REAL    DEFAULT 0,
+    light_ship_count    INTEGER DEFAULT 0,
+    light_ship_strength REAL    DEFAULT 0,
+    transport_count     INTEGER DEFAULT 0,
+    transport_strength  REAL    DEFAULT 0,
+    heavy_ship_count    INTEGER DEFAULT 0,
+    heavy_ship_strength REAL    DEFAULT 0,
+    -- Totals
+    army_count          INTEGER DEFAULT 0,
+    army_strength       REAL    DEFAULT 0,
+    navy_count          INTEGER DEFAULT 0,
+    navy_strength       REAL    DEFAULT 0,
+    UNIQUE(playthrough_id, country_id, snapshot_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mil_snap_pt
+    ON country_military_snapshots(playthrough_id, snapshot_id);
+CREATE INDEX IF NOT EXISTS idx_mil_snap_country
+    ON country_military_snapshots(playthrough_id, country_id, game_date);
+
+-- Per-participant scores and cumulative losses at each snapshot (active wars only).
+CREATE TABLE IF NOT EXISTS war_participant_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id  TEXT    NOT NULL REFERENCES playthroughs(id),
+    war_id          TEXT    NOT NULL,
+    country_id      INTEGER NOT NULL,
+    country_tag     TEXT,
+    snapshot_id     INTEGER NOT NULL REFERENCES snapshots(id),
+    game_date       TEXT    NOT NULL,
+    side            TEXT    NOT NULL,           -- "Attacker" or "Defender"
+    score_combat    REAL    DEFAULT 0,
+    score_siege     REAL    DEFAULT 0,
+    score_joining   REAL    DEFAULT 0,
+    losses_json     TEXT,                       -- JSON: {unit_type: {Battle: N, Attrition: N}}
+    UNIQUE(playthrough_id, war_id, country_id, snapshot_id)
+);
+CREATE INDEX IF NOT EXISTS idx_war_part_snap
+    ON war_participant_snapshots(playthrough_id, war_id, snapshot_id);
+
+-- One row per unique detected battle (insert-or-skip on dedup key).
+-- Slot order for forces/losses/imprisoned arrays (JSON 8-element):
+-- [infantry, cavalry, artillery, auxiliary, galley, light_ship, transport, heavy_ship]
+CREATE TABLE IF NOT EXISTS battles (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    playthrough_id          TEXT    NOT NULL REFERENCES playthroughs(id),
+    war_id                  TEXT    NOT NULL,
+    game_date               TEXT    NOT NULL,
+    location_id             INTEGER,
+    is_land                 BOOLEAN DEFAULT 1,
+    war_attacker_win        BOOLEAN,
+    war_score_delta         REAL,
+    -- Attacker side
+    attacker_country_id     INTEGER,
+    attacker_character_id   INTEGER,
+    attacker_forces         TEXT,               -- JSON 8-slot array (total engaged)
+    attacker_losses         TEXT,               -- JSON 8-slot array
+    attacker_imprisoned     TEXT,               -- JSON 8-slot array
+    attacker_tradition      REAL,
+    attacker_experience     REAL,
+    -- Defender side
+    defender_country_id     INTEGER,
+    defender_character_id   INTEGER,
+    defender_forces         TEXT,
+    defender_losses         TEXT,
+    defender_imprisoned     TEXT,
+    defender_tradition      REAL,
+    defender_experience     REAL,
+    detected_at_snapshot_id INTEGER REFERENCES snapshots(id),
+    UNIQUE(playthrough_id, war_id, game_date, location_id)
+);
+CREATE INDEX IF NOT EXISTS idx_battles_war
+    ON battles(playthrough_id, war_id);
+
+-- One row per siege lifecycle — updated on each snapshot while siege is active.
+CREATE TABLE IF NOT EXISTS sieges (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    siege_game_id           TEXT    NOT NULL,   -- siege_manager.database key
+    playthrough_id          TEXT    NOT NULL REFERENCES playthroughs(id),
+    location_id             INTEGER,
+    war_id                  TEXT,               -- inferred from attacker participants (nullable)
+    attacker_country_ids    TEXT,               -- JSON list of country IDs
+    defender_country_id     INTEGER,
+    first_seen_date         TEXT,
+    last_seen_date          TEXT,
+    first_seen_snapshot_id  INTEGER REFERENCES snapshots(id),
+    last_seen_snapshot_id   INTEGER REFERENCES snapshots(id),
+    max_besieging_total     REAL    DEFAULT 0,
+    last_siege_day          INTEGER,
+    last_duration           INTEGER,
+    last_morale             REAL,
+    last_siege_dice         INTEGER,
+    last_siege_status       TEXT,
+    is_active               BOOLEAN DEFAULT 1,  -- false when absent from siege_manager
+    UNIQUE(playthrough_id, siege_game_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sieges_war
+    ON sieges(playthrough_id, war_id);
 
 -- ── Geography entity tables ────────────────────────────────────────────
 
@@ -1041,6 +1165,353 @@ class Database:
             query += " AND war_id = ?"
             params.append(war_id)
         query += " ORDER BY game_date ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Country Military Snapshots
+    # ------------------------------------------------------------------
+
+    async def bulk_insert_country_military_snapshots(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        game_date: str,
+        rows: list[dict],
+    ) -> int:
+        """Bulk-insert country military snapshot rows.
+
+        Each row dict comes from extract_country_military() and must contain
+        country_id and the count/strength columns for each unit category.
+        Uses INSERT OR IGNORE — existing rows for the same
+        (playthrough_id, country_id, snapshot_id) are silently skipped.
+        """
+        if not rows:
+            return 0
+        data = [
+            (
+                playthrough_id,
+                r["country_id"],
+                r.get("country_tag"),
+                snapshot_id,
+                game_date,
+                r.get("infantry_count", 0),   r.get("infantry_strength", 0),
+                r.get("cavalry_count", 0),     r.get("cavalry_strength", 0),
+                r.get("artillery_count", 0),   r.get("artillery_strength", 0),
+                r.get("auxiliary_count", 0),   r.get("auxiliary_strength", 0),
+                r.get("galley_count", 0),      r.get("galley_strength", 0),
+                r.get("light_ship_count", 0),  r.get("light_ship_strength", 0),
+                r.get("transport_count", 0),   r.get("transport_strength", 0),
+                r.get("heavy_ship_count", 0),  r.get("heavy_ship_strength", 0),
+                r.get("army_count", 0),        r.get("army_strength", 0),
+                r.get("navy_count", 0),        r.get("navy_strength", 0),
+            )
+            for r in rows
+        ]
+        await self.conn.executemany(
+            """INSERT OR IGNORE INTO country_military_snapshots
+               (playthrough_id, country_id, country_tag, snapshot_id, game_date,
+                infantry_count, infantry_strength,
+                cavalry_count, cavalry_strength,
+                artillery_count, artillery_strength,
+                auxiliary_count, auxiliary_strength,
+                galley_count, galley_strength,
+                light_ship_count, light_ship_strength,
+                transport_count, transport_strength,
+                heavy_ship_count, heavy_ship_strength,
+                army_count, army_strength,
+                navy_count, navy_strength)
+               VALUES (?,?,?,?,?,
+                       ?,?,?,?,?,?,?,?,
+                       ?,?,?,?,?,?,?,?,
+                       ?,?,?,?)""",
+            data,
+        )
+        return len(data)
+
+    async def get_country_military_snapshots(
+        self,
+        playthrough_id: str,
+        country_tags: list[str] | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> list[dict]:
+        """Get country military snapshots with optional filters.
+
+        country_tags: filter to specific country TAGs (e.g. ["FRA", "ENG"])
+        from_date / to_date: EU5 date string bounds (inclusive)
+        """
+        query = "SELECT * FROM country_military_snapshots WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if country_tags:
+            ph = ",".join("?" * len(country_tags))
+            query += f" AND country_tag IN ({ph})"
+            params.extend(country_tags)
+        if from_date:
+            query += " AND game_date >= ?"
+            params.append(from_date)
+        if to_date:
+            query += " AND game_date <= ?"
+            params.append(to_date)
+        query += " ORDER BY game_date ASC, country_tag ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # War Participant Snapshots
+    # ------------------------------------------------------------------
+
+    async def bulk_insert_war_participant_snapshots(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        game_date: str,
+        rows_by_war: dict[str, list[dict]],
+    ) -> int:
+        """Bulk-insert war participant snapshot rows for one snapshot.
+
+        rows_by_war: { war_id: [participant_snapshot_dicts] }
+        Each dict comes from extract_war_participant_snapshots() and must contain
+        country_id, country_tag, side, score_*, losses_json.
+
+        Uses INSERT OR IGNORE on UNIQUE(playthrough_id, war_id, country_id, snapshot_id).
+        """
+        if not rows_by_war:
+            return 0
+        data = []
+        for war_id, participants in rows_by_war.items():
+            for p in participants:
+                data.append((
+                    playthrough_id,
+                    war_id,
+                    p["country_id"],
+                    p.get("country_tag"),
+                    snapshot_id,
+                    game_date,
+                    p.get("side", "Unknown"),
+                    p.get("score_combat", 0),
+                    p.get("score_siege", 0),
+                    p.get("score_joining", 0),
+                    p.get("losses_json"),
+                ))
+        if not data:
+            return 0
+        await self.conn.executemany(
+            """INSERT OR IGNORE INTO war_participant_snapshots
+               (playthrough_id, war_id, country_id, country_tag,
+                snapshot_id, game_date, side,
+                score_combat, score_siege, score_joining, losses_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            data,
+        )
+        return len(data)
+
+    async def get_war_participant_snapshots(
+        self,
+        playthrough_id: str,
+        war_id: str | None = None,
+        country_tags: list[str] | None = None,
+    ) -> list[dict]:
+        """Get war participant snapshot history, optionally filtered by war_id or tags."""
+        query = "SELECT * FROM war_participant_snapshots WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if war_id is not None:
+            query += " AND war_id = ?"
+            params.append(war_id)
+        if country_tags:
+            ph = ",".join("?" * len(country_tags))
+            query += f" AND country_tag IN ({ph})"
+            params.extend(country_tags)
+        query += " ORDER BY game_date ASC, war_id, country_tag"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Battles
+    # ------------------------------------------------------------------
+
+    async def upsert_battle(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        battle: dict,
+    ) -> bool:
+        """Insert a battle row, skipping if already recorded (INSERT OR IGNORE).
+
+        battle: dict from extract_new_battles() — must contain war_id, game_date,
+        location_id, and the attacker/defender columns.
+
+        Returns True if the row was newly inserted, False if it was a duplicate.
+        """
+        cursor = await self.conn.execute(
+            """INSERT OR IGNORE INTO battles
+               (playthrough_id, war_id, game_date, location_id, is_land,
+                war_attacker_win, war_score_delta,
+                attacker_country_id, attacker_character_id,
+                attacker_forces, attacker_losses, attacker_imprisoned,
+                attacker_tradition, attacker_experience,
+                defender_country_id, defender_character_id,
+                defender_forces, defender_losses, defender_imprisoned,
+                defender_tradition, defender_experience,
+                detected_at_snapshot_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                playthrough_id,
+                battle["war_id"],
+                battle["game_date"],
+                battle.get("location_id"),
+                battle.get("is_land", True),
+                battle.get("war_attacker_win"),
+                battle.get("war_score_delta"),
+                battle.get("attacker_country_id"),
+                battle.get("attacker_character_id"),
+                battle.get("attacker_forces"),
+                battle.get("attacker_losses"),
+                battle.get("attacker_imprisoned"),
+                battle.get("attacker_tradition"),
+                battle.get("attacker_experience"),
+                battle.get("defender_country_id"),
+                battle.get("defender_character_id"),
+                battle.get("defender_forces"),
+                battle.get("defender_losses"),
+                battle.get("defender_imprisoned"),
+                battle.get("defender_tradition"),
+                battle.get("defender_experience"),
+                snapshot_id,
+            ),
+        )
+        return cursor.lastrowid != 0
+
+    async def get_battles(
+        self,
+        playthrough_id: str,
+        war_id: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> list[dict]:
+        """Get battles with optional filters."""
+        query = "SELECT * FROM battles WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if war_id is not None:
+            query += " AND war_id = ?"
+            params.append(war_id)
+        if from_date:
+            query += " AND game_date >= ?"
+            params.append(from_date)
+        if to_date:
+            query += " AND game_date <= ?"
+            params.append(to_date)
+        query += " ORDER BY game_date ASC"
+        cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Sieges
+    # ------------------------------------------------------------------
+
+    async def upsert_siege(
+        self,
+        playthrough_id: str,
+        snapshot_id: int,
+        game_date: str,
+        siege: dict,
+    ) -> None:
+        """Insert a new siege or update an existing one.
+
+        On first sight: full insert with first_seen_* fields.
+        On subsequent sights: update last_seen_* and current state fields.
+
+        siege: dict from extract_sieges() — must contain siege_game_id and
+        the state columns.
+        """
+        siege_game_id = str(siege["siege_game_id"])
+        besieging = siege.get("besieging_total", 0) or 0
+
+        await self.conn.execute(
+            """INSERT INTO sieges
+               (siege_game_id, playthrough_id, location_id, war_id,
+                attacker_country_ids, defender_country_id,
+                first_seen_date, last_seen_date,
+                first_seen_snapshot_id, last_seen_snapshot_id,
+                max_besieging_total,
+                last_siege_day, last_duration, last_morale,
+                last_siege_dice, last_siege_status, is_active)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)
+               ON CONFLICT(playthrough_id, siege_game_id) DO UPDATE SET
+                   last_seen_date        = excluded.last_seen_date,
+                   last_seen_snapshot_id = excluded.last_seen_snapshot_id,
+                   max_besieging_total   = MAX(max_besieging_total, excluded.max_besieging_total),
+                   last_siege_day        = excluded.last_siege_day,
+                   last_duration         = excluded.last_duration,
+                   last_morale           = excluded.last_morale,
+                   last_siege_dice       = excluded.last_siege_dice,
+                   last_siege_status     = excluded.last_siege_status,
+                   war_id                = COALESCE(excluded.war_id, war_id),
+                   is_active             = 1""",
+            (
+                siege_game_id,
+                playthrough_id,
+                siege.get("location_id"),
+                siege.get("war_id"),
+                siege.get("attacker_country_ids"),
+                siege.get("defender_country_id"),
+                game_date,   # first_seen_date (only used on INSERT)
+                game_date,   # last_seen_date
+                snapshot_id, # first_seen_snapshot_id (only used on INSERT)
+                snapshot_id, # last_seen_snapshot_id
+                besieging,
+                siege.get("siege_day"),
+                siege.get("duration"),
+                siege.get("morale"),
+                siege.get("siege_dice"),
+                siege.get("siege_status"),
+            ),
+        )
+
+    async def mark_sieges_inactive(
+        self,
+        playthrough_id: str,
+        active_siege_game_ids: set[str],
+    ) -> int:
+        """Mark sieges no longer present in the save as inactive.
+
+        active_siege_game_ids: the set of siege_game_id strings seen in the
+        current snapshot's siege_manager.database.
+
+        Returns the number of rows updated.
+        """
+        if active_siege_game_ids:
+            ph = ",".join("?" * len(active_siege_game_ids))
+            cursor = await self.conn.execute(
+                f"""UPDATE sieges SET is_active = 0
+                    WHERE playthrough_id = ?
+                      AND is_active = 1
+                      AND siege_game_id NOT IN ({ph})""",
+                [playthrough_id, *active_siege_game_ids],
+            )
+        else:
+            # No active sieges at all — mark all as inactive
+            cursor = await self.conn.execute(
+                "UPDATE sieges SET is_active = 0 WHERE playthrough_id = ? AND is_active = 1",
+                (playthrough_id,),
+            )
+        return cursor.rowcount
+
+    async def get_sieges(
+        self,
+        playthrough_id: str,
+        war_id: str | None = None,
+        active_only: bool = False,
+    ) -> list[dict]:
+        """Get sieges with optional filters."""
+        query = "SELECT * FROM sieges WHERE playthrough_id = ?"
+        params: list[Any] = [playthrough_id]
+        if war_id is not None:
+            query += " AND war_id = ?"
+            params.append(war_id)
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY first_seen_date ASC"
         cursor = await self.conn.execute(query, params)
         return [dict(r) for r in await cursor.fetchall()]
 

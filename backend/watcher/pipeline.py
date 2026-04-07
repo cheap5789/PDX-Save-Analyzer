@@ -35,6 +35,15 @@ from backend.parser.eu5.wars import (
     extract_war_statics, extract_war_snapshot_rows,
     extract_all_war_participants, detect_battle_events,
 )
+from backend.parser.eu5.military import (
+    load_unit_type_catalog,
+    extract_country_military,
+    extract_war_participant_snapshots,
+    extract_new_battles,
+    extract_sieges,
+    build_war_participant_index,
+    build_active_war_country_ids,
+)
 from backend.parser.eu5.geography import (
     extract_location_statics, extract_location_snapshot_rows,
     extract_province_statics, extract_province_snapshot_rows,
@@ -91,6 +100,10 @@ class WatcherPipeline:
         self._started_at: float = 0.0  # monotonic timestamp — files older than this are skipped
         self._last_battle_state: dict[str, dict] | None = None  # {war_id: {date, location}}
         self._last_location_state: dict[int, dict] | None = None  # {loc_id: {fields}}
+        # Military / war extended state
+        self._unit_type_catalog: dict = {}  # loaded once from game install path
+        # Separate battle state for the battles table (only advances at snapshot time)
+        self._prev_snapshot_battle_state: dict[str, dict] = {}  # {war_id: {date, location}}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -106,6 +119,13 @@ class WatcherPipeline:
         # Open database
         self._db = Database(self.config.db_path)
         await self._db.open()
+
+        # Load unit type catalog (parsed once from game install path)
+        try:
+            self._unit_type_catalog = load_unit_type_catalog(self.config.game_install_path)
+        except Exception:
+            logger.warning("Failed to load unit type catalog — regiment extraction disabled", exc_info=True)
+            self._unit_type_catalog = {}
 
         # Resolve enabled fields
         if self.config.enabled_field_keys:
@@ -326,13 +346,60 @@ class WatcherPipeline:
                     pt_id, wid, parts,
                 )
 
+            # War participant snapshots (scores + cumulative losses per active war)
+            wp_snap_rows = extract_war_participant_snapshots(save)
+            wp_snap_count = await self._db.bulk_insert_war_participant_snapshots(
+                pt_id, snap_id, save.game_date, wp_snap_rows,
+            )
+
             logger.info(
                 f"  {len(war_statics)} wars upserted, "
                 f"{war_snap_count} war snapshot rows, "
-                f"{part_count} participants"
+                f"{part_count} participants, "
+                f"{wp_snap_count} participant snapshot rows"
             )
         except Exception:
             logger.exception("Error in war extraction")
+
+        # Step 7b: Country military snapshots (regiment counts + strengths)
+        try:
+            active_war_ids = build_active_war_country_ids(save)
+            mil_rows = extract_country_military(
+                save, self._unit_type_catalog, active_war_ids,
+            )
+            mil_count = await self._db.bulk_insert_country_military_snapshots(
+                pt_id, snap_id, save.game_date, mil_rows,
+            )
+            logger.info(f"  Military: {mil_count} country snapshots")
+        except Exception:
+            logger.exception("Error in military extraction")
+
+        # Step 7c: Battle recording (diff against snapshot-level state)
+        try:
+            new_battles, self._prev_snapshot_battle_state = extract_new_battles(
+                save, self._prev_snapshot_battle_state,
+            )
+            for battle in new_battles:
+                await self._db.upsert_battle(pt_id, snap_id, battle)
+            if new_battles:
+                logger.info(f"  Battles: {len(new_battles)} new battle(s) recorded")
+        except Exception:
+            logger.exception("Error in battle extraction")
+
+        # Step 7d: Siege tracking (upsert current state, mark resolved ones inactive)
+        try:
+            wp_index = build_war_participant_index(save)
+            siege_rows = extract_sieges(save, wp_index)
+            active_siege_ids: set[str] = set()
+            for siege in siege_rows:
+                await self._db.upsert_siege(pt_id, snap_id, save.game_date, siege)
+                active_siege_ids.add(str(siege["siege_game_id"]))
+            deactivated = await self._db.mark_sieges_inactive(pt_id, active_siege_ids)
+            logger.info(
+                f"  Sieges: {len(siege_rows)} active, {deactivated} marked inactive"
+            )
+        except Exception:
+            logger.exception("Error in siege extraction")
 
         # Step 8: Geography entity tracking (locations + provinces)
         try:

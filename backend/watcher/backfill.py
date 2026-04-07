@@ -24,6 +24,15 @@ from backend.parser.eu5.wars import (
     extract_war_statics, extract_war_snapshot_rows,
     extract_all_war_participants,
 )
+from backend.parser.eu5.military import (
+    load_unit_type_catalog,
+    extract_country_military,
+    extract_war_participant_snapshots,
+    extract_new_battles,
+    extract_sieges,
+    build_war_participant_index,
+    build_active_war_country_ids,
+)
 from backend.parser.eu5.geography import (
     extract_location_statics, extract_location_snapshot_rows,
     extract_province_statics, extract_province_snapshot_rows,
@@ -43,6 +52,7 @@ async def run_backfill(
     loc_dir: Path | None,
     enabled_fields: list[FieldDef],
     broadcast_fn: Callable[[dict], Any] | None = None,
+    game_install_path: Path | None = None,
 ) -> dict:
     """
     Scan save_folder for .eu5 files belonging to playthrough_id and import
@@ -98,6 +108,17 @@ async def run_backfill(
     })
 
     effective_loc_dir = loc_dir if (loc_dir and loc_dir.exists()) else None
+
+    # Load unit type catalog once (needed for regiment extraction)
+    unit_type_catalog: dict = {}
+    if game_install_path and Path(game_install_path).exists():
+        try:
+            unit_type_catalog = load_unit_type_catalog(game_install_path)
+        except Exception:
+            logger.warning("Backfill: failed to load unit type catalog", exc_info=True)
+
+    # Track most recent battle per war to detect newly-recorded battles
+    prev_battle_states: dict[str, dict] = {}
 
     for i, save_path in enumerate(save_files):
         # Broadcast progress at start of each file so UI stays responsive
@@ -205,8 +226,45 @@ async def run_backfill(
             all_participants = extract_all_war_participants(save)
             for wid, parts in all_participants.items():
                 await db.upsert_war_participants(pt_id, wid, parts)
+            # War participant snapshots (scores + cumulative losses per active war)
+            wp_snap_rows = extract_war_participant_snapshots(save)
+            await db.bulk_insert_war_participant_snapshots(
+                pt_id, snap_id, save.game_date, wp_snap_rows,
+            )
         except Exception:
             logger.warning(f"Backfill: war extraction failed for {save_path.name}", exc_info=True)
+
+        # --- Military ---
+        try:
+            active_war_ids = build_active_war_country_ids(save)
+            mil_rows = extract_country_military(save, unit_type_catalog, active_war_ids)
+            await db.bulk_insert_country_military_snapshots(
+                pt_id, snap_id, save.game_date, mil_rows,
+            )
+        except Exception:
+            logger.warning(f"Backfill: military extraction failed for {save_path.name}", exc_info=True)
+
+        # --- Battles ---
+        try:
+            new_battles, prev_battle_states = extract_new_battles(save, prev_battle_states)
+            for battle in new_battles:
+                await db.upsert_battle(pt_id, snap_id, battle)
+            if new_battles:
+                logger.debug(f"Backfill: {len(new_battles)} battles recorded for {save_path.name}")
+        except Exception:
+            logger.warning(f"Backfill: battle extraction failed for {save_path.name}", exc_info=True)
+
+        # --- Sieges ---
+        try:
+            wp_index = build_war_participant_index(save)
+            siege_rows = extract_sieges(save, wp_index)
+            active_siege_ids: set[str] = set()
+            for siege in siege_rows:
+                await db.upsert_siege(pt_id, snap_id, save.game_date, siege)
+                active_siege_ids.add(str(siege["siege_game_id"]))
+            await db.mark_sieges_inactive(pt_id, active_siege_ids)
+        except Exception:
+            logger.warning(f"Backfill: siege extraction failed for {save_path.name}", exc_info=True)
 
         # --- Geography ---
         try:
