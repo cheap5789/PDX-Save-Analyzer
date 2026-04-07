@@ -170,8 +170,8 @@ class WarResponse(BaseModel):
     end_date: str | None = None
     is_civil_war: bool = False
     is_revolt: bool = False
-    original_attacker_id: str | None = None
-    original_target_id: str | None = None
+    original_attacker_id: int | None = None
+    original_target_id: int | None = None
     original_defenders: list | str | None = None
     goal_type: str | None = None
     casus_belli: str | None = None
