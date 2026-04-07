@@ -27,6 +27,34 @@ The save is **self-referential** for culture and religion IDs. No external confi
 
 External localisation files are only needed for **display names** (e.g. `"bavarian"` → `"Bavarian"`, `"WUR"` → `"Württemberg"`).
 
+### Culture & Religion Reference Tables (implemented 2026-04-07)
+
+All culture and religion references in `pop_snapshots`, `location_snapshots`, and `location_snapshots` are stored as **INTEGER IDs** (raw from save). Dedicated reference tables provide ID → display name resolution:
+
+- **`cultures` table**: populated from `culture_manager.database` each backfill pass. Columns: `id` (int), `definition` (string key), `name` (localised display name), `culture_group`.
+- **`religions` table**: populated from `religion_manager.database`. Columns: `id`, `definition`, `religion_group`, `has_religious_head`, colour, and per-snapshot dynamic fields in `religion_snapshots`.
+
+Both tables are fetched once per playthrough by the frontend into `GameLocalizationContext`, which exposes `fmtCulture(id)`, `fmtReligion(id)`, and `fmtEstate(key)` helpers. All tabs (DemographicsTab, TerritoryTab, ReligionsTab) use these helpers so that integer IDs never appear in the UI.
+
+### Country Succession Chains (implemented 2026-04-07)
+
+When a country is formed (e.g. Spain formed from Castile + Aragon), the successor stores the absorbed TAGs in `countries.database[id].previous_tags`. The parser reads this into a `countries` table:
+
+- `prev_tags` (JSON array): predecessor TAGs this country was formed from.
+- `canonical_tag` (computed): terminal successor in the chain. Set to self on first write; `finalize_country_canonical_tags()` walks predecessor chains after full backfill to propagate the correct value.
+
+**Why this matters:** The Demographics tab uses `canonical_tag` to group a country and all its predecessors when filtering by country — so selecting "Spain" automatically includes Castile and Aragon's historical territory.
+
+### Location Ownership (verified 2026-04-07)
+
+In EU5, ownership is declared on the **country** object, not the location:
+
+```
+countries.database.{country_id}.owned_locations = [loc_id, ...]
+```
+
+The location object does carry an `owner` field in many cases, but it can be absent or stale. The parser builds an inverted map (`_build_owner_map()`) from the country-side list before processing locations. **Do not read ownership from `locations.locations[id].owner` directly** — use the owner map.
+
 ### Localisation (verified 2026-04-04)
 
 | Item | Detail |
@@ -62,8 +90,8 @@ Default Steam path: `C:\Program Files (x86)\Steam\steamapps\common\Europa Univer
 | `hundred_years_war.200_fire_only_once` | string_lookup | An event flag | `events/` |
 | `flavor_sco.101_fire_only_once` | string_lookup | Scotland flavor event flag | `events/` |
 | `pattern_quarterly_flag.dds` | CoA data | Flag pattern texture | `gfx/coat_of_arms/patterns/` |
-| `stability` value 23.09 | `currency_data` | Stability — scale unknown (0–100?) | `common/defines/` |
-| `karma` / `purity` / `righteousness` | `currency_data` | Religion-specific mechanics? | `common/religions/` or `common/defines/` |
+| `stability` value 23.09 | `currency_data` | Stability — scale −100 to +100, confirmed via `common/auto_modifiers/country.txt` | Resolved — see save-schema.md |
+| `karma` / `purity` / `righteousness` | `currency_data` | Religion-specific mechanics — confirmed: `karma`=Buddhist, `purity`=Shinto, `righteousness`=Sanjiao | Resolved — see save-schema.md |
 
 ---
 

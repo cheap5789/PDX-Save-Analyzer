@@ -35,6 +35,7 @@
   - [Score](#score)
   - [Government](#government)
   - [Religion & Diplomacy](#religion--diplomacy)
+  - [Cultures — Reference Table](#cultures--reference-table-implemented-2026-04-07)
   - [Geography — Locations & Provinces](#geography--locations--provinces)
   - [Demographics — Population & Pops](#demographics--population--pops)
 - [Open Questions](#open-questions)
@@ -352,13 +353,15 @@ Named situations, each with status + dates:
 | # | Field | JSON Path (relative to country object) | Raw Value (FRA) | Store in DB | Display in Frontend | Status | Notes |
 |---|-------|---------------------------------------|-----------------|-------------|--------------------|---------| ------|
 | 1 | Country tag | `country_name` / `definition` | `"FRA"` | `FRA` | Localise via `FRA` → "France" | **OK** | `country_name`, `definition`, `flag`, `historical` all contain the same tag string. Only `country_name` needs storing. Localisation source: `localization/<lang>/countries_l_<lang>.yml` |
+| 1a | Predecessor tags | `previous_tags` | `["CAS","ARA"]` | `prev_tags` (JSON array) | "Formed from: Castile, Aragon" | **IMPLEMENTED** | Present on countries formed by union or conquest. A single predecessor is stored as a plain string in the save; multiple as a JSON array. Normalised to a list in `backend/parser/eu5/countries.py`. Absent on most countries (no predecessors). |
+| 1b | Canonical tag | *(derived — not in save)* | — | `canonical_tag` TEXT | Used for succession grouping in UI | **IMPLEMENTED** | DB-computed field, not read from save. After full backfill, `finalize_country_canonical_tags()` walks `prev_tags` chains to find the terminal successor for each country. All predecessors and the terminal successor share the same `canonical_tag`. Example: CAS has `prev_tags=null` and gets `canonical_tag="SPA"`; SPA has `canonical_tag="SPA"`. Enables the UI to transparently include predecessor territory when filtering by a modern country. |
 | 2 | Country type | `country_type` | `"Real"` | `Real` | Not displayed | **OK** | Filter for "real" countries vs rebel/colonial shell entities. Always `"Real"` for player-relevant countries. |
 | 3 | Entity type | `type` | `"location"` | `location` | Not displayed | **NEEDS FIX** | Determines what kind of entity the country is. Possible values: `location` (land-controlling societies — the standard case), `building` (entities existing through buildings on others' land, e.g. banks), `pop` (societies without government), `army` (mercenaries), `navy` (pirates). Only `location`-type countries should get full field extraction (economy, military, diplomacy, etc.). Non-location types should only store minimal data: population, gold. |
 | 4 | Court language | `court_language` | `"french_language"` | `french_language` | Localise → "French" | **NOT TRACKED** | Visible in game UI. Localisation source: `localization/<lang>/cultural_and_languages_l_<lang>.yml`. Not currently extracted by summary or snapshot. |
 | 5 | Liturgical language | `liturgical_language` | `"latin_language"` | `latin_language` | Localise → "Latin" | **NOT TRACKED** | Same localisation source as court language. Not currently extracted. Lower priority — only relevant for religion mechanics. |
 | 6 | Nickname | `nickname` | `["subunit_nickname_french_royal"]` | — | — | **SKIP** | Refers to a unit regiment nickname, NOT a country nickname. Not useful for country-level tracking. |
 | 7 | Color | `color.rgb` | `[33, 33, 173]` | `[33,33,173]` | Chart/map line color | **NOT TRACKED** | Direct RGB array. Useful for frontend chart colors (match country's map color). Not currently extracted. |
-| 8 | Primary culture | `primary_culture` | `1021` (int) | `french` (string key) | Localise `french` → "French" | **OK** | Resolved via `culture_manager.database[1021].name` → `"french"`. Store string key, not int ID. Currently handled in `summary.py`. |
+| 8 | Primary culture | `primary_culture` | `1021` (int) | `french` (string key) in country summary; INTEGER in pop/location snapshots | Localise `french` → "French" | **OK** | Resolved via `culture_manager.database[1021].name` → `"french"`. Country summary (`summary.py`) stores the string key. Pop and location snapshot rows store the raw INTEGER ID as a FK into the `cultures` table; display name resolved at frontend via `GameLocalizationContext.fmtCulture()`. |
 | 9 | Primary religion | `primary_religion` | `12` (int) | `catholic` (string key) | Localise `catholic` → "Catholic" | **OK** | Resolved via `religion_manager.database[12].definition` → `"catholic"`. Store string key, not int ID. Currently handled in `summary.py`. |
 | 10 | Accepted cultures | `accepted_cultures` | `[1026, 1025, 1034, ...]` (9 ints) | List of string keys: `["champenais","picard","poitevin",...]` | Localise each | **NOT TRACKED** | Each int resolves via `culture_manager.database[id].name`. Game shows 4 culture statuses per country: primary, accepted, tolerated, discriminated. We should track which cultures have which status. |
 | 11 | Tolerated cultures | `tolerated_cultures` | `[1037, 1035, 1031, 1032]` (4 ints) | List of string keys | Localise each | **NOT TRACKED** | Same resolution as accepted_cultures. Discriminated = all other cultures present in country's pops but not in any of the above lists. |
@@ -383,6 +386,8 @@ Changes to apply after full audit is complete:
 5. **[LOW] Court language**: Extract `court_language`. Localise via `cultural_and_languages_l_<lang>.yml`. Low priority unless user wants to track language shifts.
 
 6. **[CLEANUP] Redundant fields**: `definition`, `flag`, `historical` all duplicate `country_name`. Only `country_name` (= TAG) needs to be read. `historical` could be interesting if a country was formed (tag changed) but this is edge-case.
+
+8. **[DONE 2026-04-07] Country succession tracking**: `previous_tags` is persisted per country in the `countries` table as `prev_tags` (JSON array). After full backfill, `finalize_country_canonical_tags()` walks predecessor chains to assign a `canonical_tag` to every country — the terminal successor TAG in the formation chain. Predecessors and successors share the same `canonical_tag`, enabling the UI to transparently include historical territory when filtering demographics or territory by a given country. Stub rows are emitted for predecessor TAGs that appear in `prev_tags` but have no save entry (i.e. the country no longer exists). Implemented in `backend/parser/eu5/countries.py` and `backend/storage/database.py`.
 
 7. **[BUG] Entity type filtering**: Currently we filter on `country_type == "Real"` but ignore `type`. Non-location entities (building/pop/army/navy) pass the "Real" filter but have fundamentally different data shapes. Full field extraction (military, diplomacy, stability, etc.) is meaningless for them. Fix: check `type` field during extraction. For `location` entities → full extraction. For `building`, `pop`, `army`, `navy` → store only minimal data (population, gold). Skip them from event diffing, charts, and most analyses.
 
@@ -961,13 +966,13 @@ Per-country bilateral `relations` sub-dicts (Opinion, Trust, Antagonism biases p
 
 #### Religion, Diplomacy & Wars — Backlog
 
-39. **[NEW] Religion entity table**: Create a `religions` tracked-entity type in the parser. Each snapshot records one row per religion in `religion_manager.database` containing: `definition`, `group`, `has_religious_head`, `important_country`, `reform_desire`, `tithe`, `saint_power`, `timed_modifier_count`. Category: `religion`.
+39. **[DONE 2026-04-07] Religion entity table**: `religions` table created. Each backfill pass upserts one row per religion from `religion_manager.database` with: `definition`, `religion_group`, `has_religious_head`, `important_country_id`, `color_rgb` (JSON). Per-snapshot dynamic fields (`reform_desire`, `tithe`, `saint_power`, `timed_modifier_count`) stored in `religion_snapshots`. Category: `religion`.
 
-40. **[NEW] Religion membership join table**: Each snapshot records `(snapshot_id, religion_id, country_id)` for every country's `primary_religion`. Replaces storing religion as a plain country field. Category: `religion`.
+40. **[NEW] Religion membership join table**: Each snapshot records `(snapshot_id, religion_id, country_id)` for every country's `primary_religion`. Not yet a dedicated join table — religion is stored as a plain integer FK in the country snapshot and pop snapshot rows. A join table would enable fast "list all countries of religion X" queries; currently requires scanning pop_snapshots or location_snapshots. Category: `religion`.
 
-41. **[NEW] Parser refactor — religion as parallel tracked entity**: Extend the parser's snapshot loop to populate religion snapshot rows alongside country snapshot rows. Requires a second entity loop over `religion_manager.database`. Category: `architecture` / `parser`.
+41. **[DONE 2026-04-07] Parser refactor — religion as parallel tracked entity**: `extract_religion_statics()` and `extract_religion_snapshot_rows()` in `backend/parser/eu5/religions.py`. Both called from backfill loop after country snapshot. Category: `architecture` / `parser`.
 
-42. **[NEW] Frontend — Religion view**: Add a Religion navigation entry parallel to Countries. Religion list page: table of all religions with member count, reform desire, tithe, has_religious_head. Religion detail page: member country list, demographic aggregates, religion-specific variable trends (reform desire over time, saint power over time). Category: `frontend`.
+42. **[DONE 2026-04-07] Frontend — Religion view**: `ReligionsTab.jsx` implemented. Shows religion summary cards (total religions, religions with dynamic data, snapshot count), metric picker (Reform Desire / Tithe / Saint Power / Timed Modifiers), religion filter toggles, time series chart (Recharts LineChart), and a scrollable all-religions reference table. Localized religion names via `GameLocalizationContext`. Category: `frontend`.
 
 43. **[NEW] Diplomats field**: Add `diplomats` (float, 0–~12) to the country snapshot field catalog. Category: `economy` (treat as a currency alongside gold/manpower/sailors). Store per snapshot.
 
@@ -975,19 +980,70 @@ Per-country bilateral `relations` sub-dicts (Opinion, Trust, Antagonism biases p
 
 45. **[NEW] Last war / last peace dates**: Add `last_war` and `last_peace` date strings to the country snapshot field catalog. Category: `diplomacy`.
 
-46. **[NEW] War entity table (static)**: Create a `wars` table populated once per war. Fields: war_id, name_key, name_bases (JSON), start_date, end_date (nullable), is_civil_war, is_revolt, original_attacker_id, original_attacker_target_id, original_defenders (JSON list), goal_type, casus_belli, goal_target (JSON). Category: `wars` / `architecture`.
+46. **[DONE 2026-04-07] War entity table (static)**: `wars` table created. Fields: `war_id`, `name_key`, `name_bases` (JSON), `start_date`, `end_date` (nullable), `is_civil_war`, `is_revolt`, `original_attacker_id`, `original_attacker_target_id`, `original_defenders` (JSON), `goal_type`, `casus_belli`, `goal_target` (JSON). Populated by `extract_war_statics()` in `backend/parser/eu5/wars.py`. Category: `wars` / `architecture`.
 
-47. **[NEW] War snapshot table**: Per snapshot, store: war_id, snapshot_id, attacker_score, defender_score, net_war_score (derived), war_direction_quarter, war_direction_year, war_goal_held (location ID, nullable). Category: `wars`.
+47. **[DONE 2026-04-07] War snapshot table**: `war_snapshots` table created. Per snapshot: `war_id`, `attacker_score`, `defender_score`, `net_war_score`, `war_direction_quarter`, `war_direction_year`, `war_goal_held` (nullable). Populated by `extract_war_snapshot_rows()`. Category: `wars`.
 
-48. **[NEW] War participant table**: Per (war_id, country_id): side, join_reason, join_type, called_by (country_id, nullable), join_date, io_id (nullable), status (Active/Left/Declined), score_combat, score_siege, score_joining, losses (JSON blob `{unit_type: {cause: count}}`). Update status field when participant exits. Category: `wars`.
+48. **[DONE 2026-04-07] War participant table**: `war_participants` table created. Per `(war_id, country_id)`: `side`, `join_reason`, `join_type`, `called_by` (nullable), `join_date`, `io_id` (nullable), `status` (Active/Left/Declined), `score_combat`, `score_siege`, `score_joining`, `losses` (JSON). Populated by `extract_all_war_participants()`. Category: `wars`.
 
-49. **[NEW] Parser refactor — wars as parallel tracked entity**: Extend the snapshot loop to process `war_manager.database`. On each snapshot: (a) detect new wars → insert into `wars` table + insert all participants; (b) update `end_date` for newly concluded wars; (c) detect status changes in participants (Active → Left); (d) insert war snapshot row with scores. Skip null `"none"` entries. Category: `architecture` / `parser`.
+49. **[DONE 2026-04-07] Parser refactor — wars as parallel tracked entity**: `extract_war_statics()`, `extract_war_snapshot_rows()`, and `extract_all_war_participants()` called in backfill loop. Processes `war_manager.database`; skips null/none entries. Category: `architecture` / `parser`.
 
-50. **[NEW] War events**: Derive events from war processing: "war started" (new war_id), "war ended" (end_date appeared), "country joined war" (new Active participant), "country left war" (status → Left), "country declined" (status = Declined). Emit with war_id, country_id, side, date context. Category: `events`.
+50. **[NEW] War events**: Derive events from war processing: "war started" (new war_id), "war ended" (end_date appeared), "country joined war" (new Active participant), "country left war" (status → Left), "country declined" (status = Declined). Not yet implemented — events table exists but war-specific event insertion not wired. Category: `events`.
 
-51. **[NEW] Battle sub-events**: When processing a war snapshot, if `battle.date` differs from the previously stored value, record a battle event: war_id, location_id, date, is_land, winner_side, war_score_delta, attacker_country_id, attacker_character_id, defender_country_id, defender_character_id, attacker_losses (JSON), defender_losses (JSON). Category: `events` / `wars`.
+51. **[NEW] Battle sub-events**: `detect_battle_events()` function exists in `backend/parser/eu5/wars.py` but is not yet called from backfill. When implemented: detect if `battle.date` changed since previous snapshot and emit battle event row (war_id, location_id, date, is_land, winner_side, score_delta, attacker/defender country+character IDs, losses JSON). Category: `events` / `wars`.
 
 52. **[NEW] Frontend — War view**: Add a War navigation entry. War list page: all wars (active first, then concluded) with name, start/end dates, participant count, current net score. War detail page: participants list with side/losses/contribution score, war score trend line over snapshots, battle events timeline. Category: `frontend`.
+
+---
+
+### Cultures — Reference Table (implemented 2026-04-07)
+
+The `cultures` table provides the authoritative lookup from numeric culture ID to display name. It is populated during backfill from `culture_manager.database` in the save (self-referential — no external game files needed for ID resolution).
+
+#### cultures Table Schema
+
+| DB column | Save source | Sample | Notes |
+|-----------|-------------|--------|-------|
+| `id` | key in `culture_manager.database` | `1062` | Numeric culture ID. Used as FK in `pop_snapshots.culture_id`, `location_snapshots.culture_id`, etc. |
+| `playthrough_id` | backfill context | — | Partition key. |
+| `definition` | `culture_manager.database[id].culture_definition` or `name` field | `"upper_german_culture"` | String key used in localisation files. Fallback: `culture_manager.database[id].name`. |
+| `name` | `display_name(save.loc, definition)` via runtime localisation | `"Upper German"` | Human-readable display name, resolved at parse time from the game's localisation YAMLs. Empty string if localisation not loaded. |
+| `culture_group` | `culture_manager.database[id].culture_group` | `"germanic"` | Group string key. Enables "show all germanic cultures" filters. Absent on some edge-case cultures. |
+
+#### ID → Name Resolution Flow
+
+```
+Save: culture_id (int)  →  culture_manager.database[id].culture_definition (string key)
+                        →  display_name(save.loc, key)  →  "Upper German"
+```
+
+This is exactly parallel to religion ID resolution. Both cultures and religions are self-referential in the save — no external config files are needed to map IDs to string keys. Localised display names require the game's localisation YAMLs (loaded at runtime from `game_install_path`).
+
+**Storage note:** All culture and religion references throughout the schema (`pop_snapshots`, `location_snapshots`, `countries`) are stored as **INTEGER IDs**, not string keys. Resolution to display names happens at query time in the frontend via the `cultures` and `religions` tables (fetched once per playthrough into `GameLocalizationContext`).
+
+#### Country Succession Reference Table (implemented 2026-04-07)
+
+The `countries` table is a reference table for all countries seen across a playthrough (including predecessor countries that no longer exist). Its primary purpose is to support the **succession chain** feature in the Demographics tab.
+
+| DB column | Source | Notes |
+|-----------|--------|-------|
+| `tag` | `countries.database[id].country_name` | 3-letter TAG, e.g. `"FRA"` |
+| `country_id` | key in `countries.database` | Numeric ID |
+| `name` | localisation lookup | Display name, e.g. `"France"` |
+| `prev_tags` | `countries.database[id].previous_tags` (JSON array) | TAGs this country was formed from, e.g. `["CAS","ARA"]` for Spain |
+| `canonical_tag` | DB-computed by `finalize_country_canonical_tags()` | Terminal successor TAG; self if no successor |
+
+Stub rows are emitted for predecessor TAGs that appear in `prev_tags` but have no live entry in the save (the country has been absorbed). This ensures every `prev_tags` entry has a resolvable row in `countries`.
+
+**Succession chain example (Spain):**
+
+```
+CAS: prev_tags=null, canonical_tag="SPA"  ← Castile, absorbed into Spain
+ARA: prev_tags=null, canonical_tag="SPA"  ← Aragon, absorbed into Spain
+SPA: prev_tags=["CAS","ARA"], canonical_tag="SPA"  ← Spain (terminal)
+```
+
+The UI uses `canonical_tag` to group successor + all predecessors when a user selects a country in the Demographics country picker, enabling territory/pop history to include predecessor territory.
 
 ---
 
@@ -1029,7 +1085,7 @@ Only locations with an `owner` field are snapshotted (13,594 in sample). Terra i
 
 | # | Field | JSON path | Sample (loc 1977, FRA) | Keep? | Notes |
 |---|-------|-----------|------------------------|-------|-------|
-| 146 | Owner | `owner` | `1135` | **YES** | Country ID. Change = ownership event. |
+| 146 | Owner | `owner` | `1135` | **YES** | Country ID. Change = ownership event. ⚠️ **Implementation note:** In EU5, the location's own `owner` field may be absent or stale. The authoritative ownership record lives on the **country** side: `countries.database.{id}.owned_locations` is a list of location IDs that country owns. Parser builds an inverted map via `_build_owner_map()` from the country-side list. Do **not** read ownership from the location object directly — use the owner map. |
 | 147 | Controller | `controller` | `1135` | **YES** | Country ID. Differs from owner during occupation. Change = controller change event. |
 | 148 | Previous owner | `previous_owner` | `1135` | **YES** | Country ID of prior owner. Used to surface recent conquest in event context. |
 | 149 | Last owner change | `last_owner_change` | `"1337.4.1"` | **YES** | Date of most recent ownership transfer. |
@@ -1042,7 +1098,7 @@ Only locations with an `owner` field are snapshotted (13,594 in sample). Terra i
 
 | # | Field | JSON path | Sample | Keep? | Notes |
 |---|-------|-----------|--------|-------|-------|
-| 154 | Culture | `culture` | `1846` | **YES** | Primary culture ID. Change between snapshots → culture flip event. |
+| 154 | Culture | `culture` | `1846` | **YES** | Primary culture ID. Stored as INTEGER FK into `cultures` table. Change between snapshots → culture flip event. Display name resolved via `GameLocalizationContext.fmtCulture()`. |
 | 155 | Secondary culture | `secondary_culture` | `1047` | **YES** | Minority culture ID. |
 | 156 | Cultural unity | `cultural_unity` | `0.95236` | **YES** | Float 0–1. How dominant the primary culture is. |
 | 157 | Religion | `religion` | `12` | **YES** | Primary religion ID. Change → religion flip event. |
@@ -1134,21 +1190,21 @@ Provinces are tracked for their food economy data. One row per province per snap
 
 #### Geography — Backlog
 
-53. **[NEW] Location static table**: Create a `locations` table (written once per location_id). Fields: location_id, province_id (nullable), raw_material, is_port (boolean), holy_sites (JSON list of religion IDs). Populated on first encounter, updated only if static fields change. Category: `geography` / `architecture`.
+53. **[DONE 2026-04-07] Location static table**: `locations` table created. Fields: `location_id`, `province_id` (nullable), `raw_material`, `is_port` (boolean), `holy_sites` (JSON). Populated by `extract_location_statics()` in `backend/parser/eu5/geography.py`. Ownership filter applied via `_build_owner_map()` — only owned locations are included. Category: `geography` / `architecture`.
 
-54. **[NEW] Location snapshot table**: Per snapshot, per owned location (those with `owner` field). Fields: location_id, snapshot_id, owner_id, controller_id, previous_owner_id, last_owner_change, last_controller_change, cores (JSON list), garrison, control, culture_id, secondary_culture_id, cultural_unity, religion_id, religious_unity (nullable), language, dialect, pop_count, rank, development, prosperity, tax, possible_tax, market_id, market_access, value_flow, institutions (JSON blob), integration_type, integration_owner_id, slave_raid_date (nullable). Category: `geography`.
+54. **[DONE 2026-04-07] Location snapshot table**: `location_snapshots` table created. Per snapshot, per owned location. Fields: `location_id`, `snapshot_id`, `game_date`, `owner_id`, `owner_tag`, `controller_id`, `previous_owner_id`, `last_owner_change`, `last_controller_change`, `cores` (JSON), `garrison`, `control`, `culture_id`, `secondary_culture_id`, `cultural_unity`, `religion_id`, `religious_unity` (nullable), `language`, `dialect`, `pop_count`, `rank`, `development`, `prosperity`, `tax`, `possible_tax`, `market_id`, `market_access`, `value_flow`, `institutions` (JSON), `integration_type`, `integration_owner_id`, `slave_raid_date` (nullable). Populated by `extract_location_snapshot_rows()`. Category: `geography`.
 
-55. **[NEW] Province static table**: Create a `provinces` table (written once per province_id). Fields: province_id, province_definition (string key), capital_location_id (nullable). Category: `geography` / `architecture`.
+55. **[DONE 2026-04-07] Province static table**: `provinces` table created. Fields: `province_id`, `province_definition`, `capital_location_id` (nullable). Populated by `extract_province_statics()`. Category: `geography` / `architecture`.
 
-56. **[NEW] Province snapshot table**: Per snapshot, per province with owner. Fields: province_id, snapshot_id, owner_id, food_current, food_max, food_change_delta, trade_balance, goods_produced (JSON blob). Category: `geography`.
+56. **[DONE 2026-04-07] Province snapshot table**: `province_snapshots` table created. Per snapshot, per province with owner. Fields: `province_id`, `snapshot_id`, `game_date`, `owner_id`, `food_current`, `food_max`, `food_change_delta`, `trade_balance`, `goods_produced` (JSON). Populated by `extract_province_snapshot_rows()`. Category: `geography`.
 
-57. **[NEW] Parser refactor — geography as parallel tracked entity set**: Extend snapshot loop to process `locations.locations` and `provinces.database`. Skip null/unowned location entries. Detect ownership, controller, culture, religion, rank, integration, core, and slave-raid changes and emit corresponding events. Category: `architecture` / `parser`.
+57. **[DONE 2026-04-07] Parser refactor — geography as parallel tracked entity set**: `extract_location_statics()`, `extract_location_snapshot_rows()`, `extract_province_statics()`, `extract_province_snapshot_rows()` all called from backfill loop. Ownership for location snapshots resolved via `_build_owner_map()` (country-side `owned_locations` list), not from location-side `owner` field. Category: `architecture` / `parser`.
 
-58. **[NEW] Geography events**: Emit location events as documented in the Events table above: first ownership, ownership/controller change, core gain/loss, integration upgrade, culture/religion flip, rank upgrade, slave raid. Category: `events`.
+58. **[NEW] Geography events**: `detect_location_events()` function exists in `backend/parser/eu5/geography.py` but is not yet called from backfill. When implemented: emit first-ownership, ownership/controller change, core gain/loss, integration upgrade, culture/religion flip, rank upgrade, and slave-raid events from consecutive location snapshot diffs. Category: `events`.
 
-59. **[NEW] Frontend — Location view**: Country detail page gets a "Territory" tab: table of all owned locations with rank, development, integration status, culture, religion, cores indicator. Sortable/filterable. Timeline of ownership change events. Location detail page: full snapshot history of all fields, event markers. Category: `frontend`.
+59. **[DONE 2026-04-07] Frontend — Location view**: `TerritoryTab.jsx` implemented. Shows summary cards (location count, total dev, total pops, rank breakdown), filter controls (rank, integration type, search by ID/language/dialect), and a sortable/filterable table of all owned locations (location ID, rank, development, prosperity, pops, tax, integration type, culture, religion, garrison, language). Culture and religion IDs resolved to display names via `GameLocalizationContext`. Capped at 500 rows with filter-narrowing prompt. Category: `frontend`.
 
-60. **[NEW] Frontend — Province aggregation**: Province summary (food stock, food delta, goods produced last month) displayed as a sub-group within the Territory tab on the country detail page. Category: `frontend`.
+60. **[NEW] Frontend — Province aggregation**: Province summary (food stock, food delta, goods produced last month) not yet displayed. Territory tab shows location-level data only; province-level aggregation remains a future task. Category: `frontend`.
 
 ---
 
@@ -1201,8 +1257,8 @@ Per pop object stored in the `pop_snapshots` table (one row per pop per location
 | 180 | Pop ID | key in `population.database` | numeric | **YES** | Stable within a save; may change across saves (not a durable cross-save key). |
 | 181 | Type | `type` | nobles, clergy, burghers, laborers, peasants, soldiers, tribesmen, slaves | **YES** | Social class. 8 types observed. |
 | 182 | Estate | `estate` | nobles_estate, clergy_estate, burghers_estate, peasants_estate, tribes_estate, dhimmi_estate, cossacks_estate | **YES** | Can differ from type (e.g. soldiers → peasants_estate). Estate drives political representation. |
-| 183 | Culture | `culture` | culture ID (int) | **YES** | Pop's origin culture. Enables per-location minority culture mapping. |
-| 184 | Religion | `religion` | religion ID (int) | **YES** | Pop's religious affiliation. Enables per-location minority religion mapping. |
+| 183 | Culture | `culture` | culture ID (int) | **YES** | Pop's origin culture. Stored as INTEGER FK into `cultures` table. Resolved to display name at query time via `GameLocalizationContext.fmtCulture(id)`. Enables per-location minority culture mapping. |
+| 184 | Religion | `religion` | religion ID (int) | **YES** | Pop's religious affiliation. Stored as INTEGER FK into `religions` table. Resolved to display name via `GameLocalizationContext.fmtReligion(id)`. Enables per-location minority religion mapping. |
 | 185 | Size | `size` | 0.00005 → 15.84 | **YES** | Population mass / capacity unit. Not in absolute heads — a work-unit scalar used by the game engine. Sum per location = `population_ratio` in `pop_stats`. |
 | 186 | Status | `status` | Primary / Accepted / Tolerated / None | **YES** | Integration level vs owning country. Absent = None. Drives stability and tax penalties. |
 | 187 | Satisfaction | `satisfaction` | 0–1 float; slaves always 0 | **YES** | Base contentment of this pop group. Low satisfaction → unrest risk. |
@@ -1269,15 +1325,15 @@ Pop IDs are not guaranteed stable across snapshots (new pops can be created, exi
 
 #### Demographics — Backlog
 
-61. **[NEW] Pop snapshot table**: Per snapshot, per location, per pop object: pop_id, location_id, snapshot_id, type, estate, culture_id, religion_id, size, status (nullable), satisfaction (nullable), intervention_satisfaction (nullable), literacy (nullable), owner_id (nullable). Category: `demographics`.
+61. **[DONE 2026-04-07] Pop snapshot table**: `pop_snapshots` table created. Fields: `pop_id`, `location_id`, `snapshot_id`, `game_date`, `owner_tag`, `type`, `estate`, `culture_id`, `religion_id`, `size`, `status` (nullable), `satisfaction` (nullable), `intervention_satisfaction` (nullable), `literacy` (nullable), `owner_id` (nullable). `game_date` and `owner_tag` are denormalized for fast aggregate queries without joins. Category: `demographics`.
 
-62. **[NEW] Parser — pop ingestion**: In the snapshot loop, for each owned location: iterate `location.population.pops`, resolve each ID in `population.database`, extract the fields above, and insert into `pop_snapshots`. Skip non-dict entries. Category: `demographics` / `parser`.
+62. **[DONE 2026-04-07] Parser — pop ingestion**: `extract_pop_snapshot_rows()` in `backend/parser/eu5/demographics.py`. Iterates `location.population.pops` per owned location, resolves each pop ID in `population.database`, and emits rows. Skips non-dict entries. Ownership (owner_tag) resolved via `_build_owner_map()` — same country-side mechanism as location snapshots. Category: `demographics` / `parser`.
 
-63. **[NEW] Frontend — Demographics tab (country)**: On the country detail page, add a Demographics tab. Show: total pop mass by type over time (stacked area chart), satisfaction by type over time (line chart), literacy by type, slave population over time, culture composition (pie + trend), religion composition (pie + trend). Category: `frontend`.
+63. **[DONE 2026-04-07] Frontend — Demographics tab**: `DemographicsTab.jsx` implemented. Features: date range picker (from/to, defaults to latest snapshot, "to" same as "from" = point-in-time mode); country picker grouped by `canonical_tag` with succession expansion; explicit Load button (no auto-fetch); abort support with elapsed timer. Point-in-time mode: pie chart + ranked table of top groups. Time-series mode: stacked area chart (top 8 groups) + satisfaction/literacy trend lines. Group-by selector: type, culture, religion, estate, status. All group keys resolved to display names via `GameLocalizationContext` (`fmtCulture`, `fmtReligion`, `fmtEstate`). Category: `frontend`.
 
-64. **[NEW] Frontend — Demographics tab (location)**: On the location detail page, add a Demographics section. Show: current pop breakdown by type × culture × religion (table), satisfaction per group, slave pops separately. Category: `frontend`.
+64. **[NEW] Frontend — Demographics tab (location)**: Location-level demographics not yet implemented. Would show current pop breakdown by type × culture × religion for a specific location, satisfaction per group, slave pops separately. Category: `frontend`.
 
-65. **[NEW] Slave demographic view**: Aggregate slave pops by owning country and by captured culture/religion. Display: total slave mass per country over time, and breakdown of slave cultures (who was enslaved). Link to slave raid events on the location. Category: `frontend` / `demographics`.
+65. **[NEW] Slave demographic view**: Slave pop aggregation not yet implemented as a dedicated view. Slave pops (type=`slaves`) are stored in `pop_snapshots` and can be queried, but no dedicated UI exists. Future work: total slave mass per country over time, breakdown by captured culture/religion, links to slave raid events. Category: `frontend` / `demographics`.
 
 ---
 
