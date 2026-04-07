@@ -36,6 +36,30 @@ All culture and religion references in `pop_snapshots`, `location_snapshots`, an
 
 Both tables are fetched once per playthrough by the frontend into `GameLocalizationContext`, which exposes `fmtCulture(id)`, `fmtReligion(id)`, and `fmtEstate(key)` helpers. All tabs (DemographicsTab, TerritoryTab, ReligionsTab) use these helpers so that integer IDs never appear in the UI.
 
+> **Schema note (fixed 2026-04-07):** The `religions` table originally used `id INTEGER PRIMARY KEY` (SQLite global rowid). When two playthroughs shared the same religion id (e.g. Catholic = id 12), the second playthrough's INSERT failed on the rowid constraint *before* the `ON CONFLICT(playthrough_id, id)` handler could fire — silently leaving the religions table empty for that playthrough and causing the UI to display raw IDs like `religion_12`. Fixed by using a composite `PRIMARY KEY (playthrough_id, id)`, matching the `cultures` table pattern. DB must be wiped and repopulated after this change.
+
+### Proportional Time Axis in Charts (implemented 2026-04-07)
+
+EU5 saves are created manually and at irregular intervals, so the gaps between snapshots can span weeks or decades of in-game time. Rendering a categorical X axis (one column per save, equal width) makes a 32-year gap look the same as a 3-month gap — distorting trends visually.
+
+All time-series charts use a **proportional linear X axis**: each save date is converted to a fractional year value and Recharts renders gaps proportionally to actual elapsed time.
+
+**Conversion (`euDateToNum`, `frontend/src/utils/formatters.js`):**
+
+```js
+// "1514.7.1" → 1514.500,  "1482.4.15" → 1482.272
+function euDateToNum(dateStr) {
+  const [year, month = 1, day = 1] = dateStr.split('.').map(Number)
+  return year + (month - 1) / 12 + (day - 1) / 365
+}
+```
+
+**Chart pattern** (used in `DemographicsTab.jsx` and `ReligionsTab.jsx`):
+- Add `dateNum: euDateToNum(d.game_date)` to each data point alongside the original `date` string.
+- Sort data by `dateNum` (not lexicographically by date string).
+- Use `<XAxis dataKey="dateNum" type="number" scale="linear" domain={['dataMin','dataMax']} tickFormatter={fmtYearTick} />`.
+- Use `labelFormatter={(_v, payload) => payload?.[0]?.payload?.date ?? ''}` on `<Tooltip>` to show the original game date string (e.g. `"1514.7.1"`) rather than the numeric value.
+
 ### Country Succession Chains (implemented 2026-04-07)
 
 When a country is formed (e.g. Spain formed from Castile + Aragon), the successor stores the absorbed TAGs in `countries.database[id].previous_tags`. The parser reads this into a `countries` table:

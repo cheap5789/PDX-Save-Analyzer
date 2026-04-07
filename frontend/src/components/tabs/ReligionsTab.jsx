@@ -5,6 +5,7 @@ import {
 import { useApi } from '../../hooks/useApi'
 import { usePerfTracker } from '../../hooks/usePerfTracker'
 import { useGameLocalization } from '../../contexts/GameLocalizationContext.jsx'
+import { euDateToNum, fmtYearTick } from '../../utils/formatters'
 
 const LINE_COLORS = [
   '#3b82f6', '#ef4444', '#22c55e', '#f59e0b',
@@ -67,12 +68,12 @@ export default function ReligionsTab({ status }) {
     const byDate = {}
     snapshots.forEach((s) => {
       if (!selectedReligions.includes(s.religion_id)) return
-      if (!byDate[s.game_date]) byDate[s.game_date] = { date: s.game_date }
+      if (!byDate[s.game_date]) byDate[s.game_date] = { date: s.game_date, dateNum: euDateToNum(s.game_date) }
       const name = fmtReligion(s.religion_id)
       byDate[s.game_date][name] = s[selectedField]
     })
 
-    return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
+    return Object.values(byDate).sort((a, b) => a.dateNum - b.dateNum)
   }, [snapshots, selectedReligions, selectedField, gameLoc])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedNames = selectedReligions.map((id) => fmtReligion(id))
@@ -169,13 +170,22 @@ export default function ReligionsTab({ status }) {
           <ResponsiveContainer width="100%" height={400}>
             <LineChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-              <XAxis dataKey="date" tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }} stroke="var(--color-border)" />
+              <XAxis
+                dataKey="dateNum"
+                type="number"
+                scale="linear"
+                domain={['dataMin', 'dataMax']}
+                tickFormatter={fmtYearTick}
+                tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }}
+                stroke="var(--color-border)"
+              />
               <YAxis tick={{ fill: 'var(--color-text-muted)', fontSize: 11 }} stroke="var(--color-border)" />
               <Tooltip
                 contentStyle={{
                   background: 'var(--color-surface-alt)', border: '1px solid var(--color-border)',
                   borderRadius: '6px', color: 'var(--color-text)', fontSize: '12px',
                 }}
+                labelFormatter={(_v, payload) => payload?.[0]?.payload?.date ?? ''}
               />
               <Legend wrapperStyle={{ fontSize: '12px', color: 'var(--color-text-muted)' }} />
               {selectedNames.map((name, i) => (

@@ -92,3 +92,36 @@ export function fmtCountry(tag, metaMap, { showPrev = true } = {}) {
 export function countryColor(tag, metaMap, fallback = '#6b7280') {
   return metaMap?.[tag]?.color ?? fallback
 }
+
+// ─── EU5 date ↔ numeric conversion (for proportional time axes) ──────────────
+
+/**
+ * Convert an EU5 game date string to a fractional year number.
+ *
+ * EU5 dates are "year.month.day" (or "year.month.day.subtick" — extra
+ * tokens are ignored).  The result is a monotonically increasing float
+ * suitable for a Recharts linear X axis so that the visual gap between
+ * two data points is proportional to actual in-game time elapsed.
+ *
+ * Examples:
+ *   "1346.1.1"     → 1346.000
+ *   "1514.7.1"     → 1514.500
+ *   "1482.4.15"    → 1482.272
+ *   "1352.5.27.22" → 1352.363  (sub-tick token ignored)
+ */
+export function euDateToNum(dateStr) {
+  const parts = (dateStr || '').split('.')
+  const year  = parseInt(parts[0], 10) || 0
+  const month = parseInt(parts[1], 10) || 1
+  const day   = parseInt(parts[2], 10) || 1
+  return year + (month - 1) / 12 + (day - 1) / 365
+}
+
+/**
+ * Format a fractional year value (from euDateToNum) as an integer year
+ * label for X axis ticks.  Adds a small epsilon before flooring to avoid
+ * e.g. 1482.000 rendering as "1481" due to float precision.
+ */
+export function fmtYearTick(v) {
+  return String(Math.floor(v + 0.001))
+}

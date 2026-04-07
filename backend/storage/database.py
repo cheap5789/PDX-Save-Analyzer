@@ -105,14 +105,14 @@ CREATE INDEX IF NOT EXISTS idx_events_playthrough
 -- ── Religion entity tables ──────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS religions (
-    id              INTEGER PRIMARY KEY,    -- religion_manager.database key (numeric)
-    playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
-    definition      TEXT NOT NULL,          -- string key e.g. "catholic"
+    playthrough_id  TEXT    NOT NULL REFERENCES playthroughs(id),
+    id              INTEGER NOT NULL,       -- religion_manager.database key (numeric)
+    definition      TEXT    NOT NULL,       -- string key e.g. "catholic"
     name            TEXT,                   -- display name (localised)
     religion_group  TEXT,                   -- e.g. "christian", "buddhist"
     has_religious_head BOOLEAN DEFAULT 0,
     color_rgb       TEXT,                   -- JSON [r,g,b]
-    UNIQUE(playthrough_id, id)
+    PRIMARY KEY (playthrough_id, id)        -- composite PK — same pattern as cultures
 );
 
 CREATE TABLE IF NOT EXISTS religion_snapshots (
@@ -815,13 +815,16 @@ class Database:
         """Create or update a religion static record."""
         await self.conn.execute(
             """INSERT INTO religions
-               (id, playthrough_id, definition, name, religion_group,
+               (playthrough_id, id, definition, name, religion_group,
                 has_religious_head, color_rgb)
                VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(playthrough_id, id) DO UPDATE SET
+                   definition = excluded.definition,
                    name = excluded.name,
-                   has_religious_head = excluded.has_religious_head""",
-            (religion_id, playthrough_id, definition, name, religion_group,
+                   religion_group = excluded.religion_group,
+                   has_religious_head = excluded.has_religious_head,
+                   color_rgb = excluded.color_rgb""",
+            (playthrough_id, religion_id, definition, name, religion_group,
              has_religious_head, json.dumps(color_rgb) if color_rgb else None),
         )
 

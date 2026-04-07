@@ -7,7 +7,7 @@ import { useApi } from '../../hooks/useApi'
 import { usePerfTracker } from '../../hooks/usePerfTracker'
 import { useCountryNames } from '../../contexts/CountryNamesContext'
 import { useGameLocalization } from '../../contexts/GameLocalizationContext.jsx'
-import { fmtCountry } from '../../utils/formatters'
+import { fmtCountry, euDateToNum, fmtYearTick } from '../../utils/formatters'
 
 const TYPE_COLORS = {
   peasants:  '#22c55e',
@@ -219,15 +219,18 @@ export default function DemographicsTab({ status, allSnapshots }) {
     }
   }, [aggregates, groupBy])
 
-  // Stacked area: [{ date, peasants: 1234, clergy: 456, … }]
+  // Stacked area: [{ date, dateNum, peasants: 1234, clergy: 456, … }]
+  // dateNum is a fractional year (e.g. 1514.5) used for the proportional X axis.
   const trendData = useMemo(() => {
     if (dates.length === 0) return []
-    const byDate = Object.fromEntries(dates.map((d) => [d, { date: d }]))
+    const byDate = Object.fromEntries(
+      dates.map((d) => [d, { date: d, dateNum: euDateToNum(d) }])
+    )
     aggregates.forEach((a) => {
       const g = String(a[groupBy] ?? 'Unknown')
       if (byDate[a.game_date]) byDate[a.game_date][g] = (a.total_size || 0) * 1000
     })
-    return Object.values(byDate)
+    return Object.values(byDate).sort((a, b) => a.dateNum - b.dateNum)
   }, [aggregates, dates, groupBy])
 
   // Pie/table: single date point
@@ -249,13 +252,15 @@ export default function DemographicsTab({ status, allSnapshots }) {
   // Satisfaction & literacy lines (type grouping only)
   const buildLineData = (field, rounder) => {
     if (dates.length === 0 || groupBy !== 'type') return []
-    const byDate = Object.fromEntries(dates.map((d) => [d, { date: d }]))
+    const byDate = Object.fromEntries(
+      dates.map((d) => [d, { date: d, dateNum: euDateToNum(d) }])
+    )
     aggregates.forEach((a) => {
       const g = String(a[groupBy] ?? 'Unknown')
       if (byDate[a.game_date] && a[field] != null)
         byDate[a.game_date][g] = rounder(a[field])
     })
-    return Object.values(byDate)
+    return Object.values(byDate).sort((a, b) => a.dateNum - b.dateNum)
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const satData = useMemo(() => buildLineData('avg_satisfaction', (v) => Math.round(v * 1000) / 1000), [aggregates, dates, groupBy])
@@ -466,6 +471,28 @@ function yTickFmt(v) {
   return Math.round(v).toString()
 }
 
+
+// Shared proportional X axis — numeric linear scale, ticks formatted as integer years.
+// The label on hover shows the original game date string from the data payload.
+function ProportionalXAxis() {
+  return (
+    <XAxis
+      dataKey="dateNum"
+      type="number"
+      scale="linear"
+      domain={['dataMin', 'dataMax']}
+      tickFormatter={xTickFmt}
+      tick={axisStyle}
+      stroke="var(--color-border)"
+    />
+  )
+}
+
+// Extract the original date string from the recharts tooltip payload for the label.
+function xLabelFmt(_numericValue, payload) {
+  return payload?.[0]?.payload?.date ?? ''
+}
+
 function TimeSeries({ trendData, satData, litData, groups, groupBy, fmtGroup, getColor, tooltipStyle }) {
   const label = GROUP_BY_OPTIONS.find((o) => o.key === groupBy)?.label
   const legendStyle = { fontSize: '12px', color: 'var(--color-text-muted)' }
@@ -477,10 +504,11 @@ function TimeSeries({ trendData, satData, litData, groups, groupBy, fmtGroup, ge
       <ChartCard title={`Population by ${label}`} height={350}>
         <AreaChart data={trendData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
-          <XAxis dataKey="date" tick={axisStyle} stroke="var(--color-border)" />
+          <ProportionalXAxis />
           <YAxis tick={axisStyle} stroke="var(--color-border)" tickFormatter={yTickFmt} />
           <Tooltip
             contentStyle={tooltipStyle}
+            labelFormatter={xLabelFmt}
             formatter={(v, name) => [v.toLocaleString(undefined, { maximumFractionDigits: 0 }), fmtGroup(name)]}
           />
           <Legend wrapperStyle={legendStyle} formatter={legendFmt} />
@@ -496,9 +524,9 @@ function TimeSeries({ trendData, satData, litData, groups, groupBy, fmtGroup, ge
         <ChartCard title="Average Satisfaction by Type" height={280}>
           <LineChart data={satData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
-            <XAxis dataKey="date" tick={axisStyle} stroke="var(--color-border)" />
+            <ProportionalXAxis />
             <YAxis domain={[0, 1]} tick={axisStyle} stroke="var(--color-border)" />
-            <Tooltip contentStyle={tooltipStyle} formatter={(v, name) => [v, fmtGroup(name)]} />
+            <Tooltip contentStyle={tooltipStyle} labelFormatter={xLabelFmt} formatter={(v, name) => [v, fmtGroup(name)]} />
             <Legend wrapperStyle={legendStyle} formatter={legendFmt} />
             {groups.map((g, i) => (
               <Line key={g} type="monotone" dataKey={g} stroke={getColor(groupBy, g, i)}
@@ -513,9 +541,9 @@ function TimeSeries({ trendData, satData, litData, groups, groupBy, fmtGroup, ge
         <ChartCard title="Average Literacy by Type (%)" height={280}>
           <LineChart data={litData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
-            <XAxis dataKey="date" tick={axisStyle} stroke="var(--color-border)" />
+            <ProportionalXAxis />
             <YAxis tick={axisStyle} stroke="var(--color-border)" />
-            <Tooltip contentStyle={tooltipStyle} formatter={(v, name) => [v, fmtGroup(name)]} />
+            <Tooltip contentStyle={tooltipStyle} labelFormatter={xLabelFmt} formatter={(v, name) => [v, fmtGroup(name)]} />
             <Legend wrapperStyle={legendStyle} formatter={legendFmt} />
             {groups.map((g, i) => (
               <Line key={g} type="monotone" dataKey={g} stroke={getColor(groupBy, g, i)}
