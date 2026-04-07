@@ -217,5 +217,44 @@ export function useApi() {
     /** GET /api/countries/:id — country reference table with succession data */
     getCountries: (playthroughId) =>
       get(`/api/countries/${playthroughId}`),
+
+    // ── Military / Battles / Sieges ─────────────────────────────
+    /** GET /api/military/:id?country_tags=&from_date=&to_date= */
+    getMilitarySnapshots: (playthroughId, { country_tags, from_date, to_date } = {}) => {
+      const params = new URLSearchParams()
+      if (country_tags) params.set('country_tags', country_tags)
+      if (from_date) params.set('from_date', from_date)
+      if (to_date) params.set('to_date', to_date)
+      const q = params.toString() ? `?${params}` : ''
+      return get(`/api/military/${playthroughId}${q}`)
+    },
+
+    /** GET /api/battles/:id?war_id=&from_date=&to_date= */
+    getBattles: (playthroughId, { war_id, from_date, to_date } = {}) => {
+      const params = new URLSearchParams()
+      if (war_id) params.set('war_id', war_id)
+      if (from_date) params.set('from_date', from_date)
+      if (to_date) params.set('to_date', to_date)
+      const q = params.toString() ? `?${params}` : ''
+      return get(`/api/battles/${playthroughId}${q}`)
+    },
+
+    /** GET /api/sieges/:id?war_id=&active_only= */
+    getSieges: (playthroughId, { war_id, active_only } = {}) => {
+      const params = new URLSearchParams()
+      if (war_id) params.set('war_id', war_id)
+      if (active_only) params.set('active_only', 'true')
+      const q = params.toString() ? `?${params}` : ''
+      return get(`/api/sieges/${playthroughId}${q}`)
+    },
+
+    /** GET /api/wars/:id/participant-history?war_id=&country_tags= */
+    getWarParticipantHistory: (playthroughId, { war_id, country_tags } = {}) => {
+      const params = new URLSearchParams()
+      if (war_id) params.set('war_id', war_id)
+      if (country_tags) params.set('country_tags', country_tags)
+      const q = params.toString() ? `?${params}` : ''
+      return get(`/api/wars/${playthroughId}/participant-history${q}`)
+    },
   }
 }
