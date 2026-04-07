@@ -6,6 +6,7 @@ import {
 import { useApi } from '../../hooks/useApi'
 import { usePerfTracker } from '../../hooks/usePerfTracker'
 import { useCountryNames } from '../../contexts/CountryNamesContext'
+import { useGameLocalization } from '../../contexts/GameLocalizationContext.jsx'
 import { fmtCountry } from '../../utils/formatters'
 
 const TYPE_COLORS = {
@@ -68,6 +69,7 @@ export default function DemographicsTab({ status, allSnapshots }) {
   const api       = useApi()
   const { track } = usePerfTracker('demographics')
   const nameMap   = useCountryNames()
+  const loc       = useGameLocalization()
   const ptId      = status?.playthrough_id
 
   // ── Available dates from snapshots ──
@@ -131,6 +133,15 @@ export default function DemographicsTab({ status, allSnapshots }) {
 
   // ── Dimension picker ──
   const [groupBy, setGroupBy] = useState('type')
+
+  // Returns a display label for a raw group value depending on the active dimension
+  const fmtGroup = useCallback((rawKey) => {
+    if (!loc) return String(rawKey)
+    if (groupBy === 'culture_id')  return loc.fmtCulture(Number(rawKey))
+    if (groupBy === 'religion_id') return loc.fmtReligion(Number(rawKey))
+    if (groupBy === 'estate')      return loc.fmtEstate(rawKey)
+    return String(rawKey)  // type / status — already human-readable
+  }, [loc, groupBy])
 
   // ── Data state ──
   const [aggregates, setAggregates] = useState([])
@@ -404,6 +415,7 @@ export default function DemographicsTab({ status, allSnapshots }) {
           litData={litData}
           groups={groups}
           groupBy={groupBy}
+          fmtGroup={fmtGroup}
           getColor={getColor}
           tooltipStyle={tooltipStyle}
         />
@@ -412,6 +424,7 @@ export default function DemographicsTab({ status, allSnapshots }) {
           breakdownData={breakdownData}
           fromDate={fromDate}
           groupBy={groupBy}
+          fmtGroup={fmtGroup}
           getColor={getColor}
           tooltipStyle={tooltipStyle}
         />
@@ -453,8 +466,10 @@ function yTickFmt(v) {
   return Math.round(v).toString()
 }
 
-function TimeSeries({ trendData, satData, litData, groups, groupBy, getColor, tooltipStyle }) {
+function TimeSeries({ trendData, satData, litData, groups, groupBy, fmtGroup, getColor, tooltipStyle }) {
   const label = GROUP_BY_OPTIONS.find((o) => o.key === groupBy)?.label
+  const legendStyle = { fontSize: '12px', color: 'var(--color-text-muted)' }
+  const legendFmt = (rawKey) => fmtGroup(rawKey)
 
   return (
     <div className="space-y-4">
@@ -466,9 +481,9 @@ function TimeSeries({ trendData, satData, litData, groups, groupBy, getColor, to
           <YAxis tick={axisStyle} stroke="var(--color-border)" tickFormatter={yTickFmt} />
           <Tooltip
             contentStyle={tooltipStyle}
-            formatter={(v, name) => [v.toLocaleString(undefined, { maximumFractionDigits: 0 }), name]}
+            formatter={(v, name) => [v.toLocaleString(undefined, { maximumFractionDigits: 0 }), fmtGroup(name)]}
           />
-          <Legend wrapperStyle={{ fontSize: '12px', color: 'var(--color-text-muted)' }} />
+          <Legend wrapperStyle={legendStyle} formatter={legendFmt} />
           {groups.map((g, i) => (
             <Area key={g} type="monotone" dataKey={g} stackId="1"
               fill={getColor(groupBy, g, i)} stroke={getColor(groupBy, g, i)} fillOpacity={0.6} />
@@ -483,8 +498,8 @@ function TimeSeries({ trendData, satData, litData, groups, groupBy, getColor, to
             <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
             <XAxis dataKey="date" tick={axisStyle} stroke="var(--color-border)" />
             <YAxis domain={[0, 1]} tick={axisStyle} stroke="var(--color-border)" />
-            <Tooltip contentStyle={tooltipStyle} />
-            <Legend wrapperStyle={{ fontSize: '12px', color: 'var(--color-text-muted)' }} />
+            <Tooltip contentStyle={tooltipStyle} formatter={(v, name) => [v, fmtGroup(name)]} />
+            <Legend wrapperStyle={legendStyle} formatter={legendFmt} />
             {groups.map((g, i) => (
               <Line key={g} type="monotone" dataKey={g} stroke={getColor(groupBy, g, i)}
                 strokeWidth={2} dot={false} connectNulls />
@@ -500,8 +515,8 @@ function TimeSeries({ trendData, satData, litData, groups, groupBy, getColor, to
             <CartesianGrid strokeDasharray="3 3" {...gridStyle} />
             <XAxis dataKey="date" tick={axisStyle} stroke="var(--color-border)" />
             <YAxis tick={axisStyle} stroke="var(--color-border)" />
-            <Tooltip contentStyle={tooltipStyle} />
-            <Legend wrapperStyle={{ fontSize: '12px', color: 'var(--color-text-muted)' }} />
+            <Tooltip contentStyle={tooltipStyle} formatter={(v, name) => [v, fmtGroup(name)]} />
+            <Legend wrapperStyle={legendStyle} formatter={legendFmt} />
             {groups.map((g, i) => (
               <Line key={g} type="monotone" dataKey={g} stroke={getColor(groupBy, g, i)}
                 strokeWidth={2} dot={false} connectNulls />
@@ -513,7 +528,7 @@ function TimeSeries({ trendData, satData, litData, groups, groupBy, getColor, to
   )
 }
 
-function PointInTime({ breakdownData, fromDate, groupBy, getColor, tooltipStyle }) {
+function PointInTime({ breakdownData, fromDate, groupBy, fmtGroup, getColor, tooltipStyle }) {
   const label = GROUP_BY_OPTIONS.find((o) => o.key === groupBy)?.label
 
   return (
@@ -527,7 +542,7 @@ function PointInTime({ breakdownData, fromDate, groupBy, getColor, tooltipStyle 
             nameKey="name"
             cx="50%" cy="50%"
             outerRadius={130}
-            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(1)}%`}
+            label={({ name, percent }) => `${fmtGroup(name)} ${(percent * 100).toFixed(1)}%`}
             labelLine={{ stroke: 'var(--color-text-muted)' }}
           >
             {breakdownData.map((entry, i) => (
@@ -536,7 +551,7 @@ function PointInTime({ breakdownData, fromDate, groupBy, getColor, tooltipStyle 
           </Pie>
           <Tooltip
             contentStyle={tooltipStyle}
-            formatter={(val) => val.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            formatter={(val, name) => [val.toLocaleString(undefined, { maximumFractionDigits: 0 }), fmtGroup(name)]}
           />
         </PieChart>
       </ChartCard>
@@ -558,7 +573,7 @@ function PointInTime({ breakdownData, fromDate, groupBy, getColor, tooltipStyle 
             <tbody>
               {breakdownData.map((row, i) => (
                 <tr key={row.name} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                  <td className="px-3 py-1.5 capitalize">
+                  <td className="px-3 py-1.5">
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <span
                         style={{
@@ -567,7 +582,7 @@ function PointInTime({ breakdownData, fromDate, groupBy, getColor, tooltipStyle 
                           background: getColor(groupBy, row.name, i),
                         }}
                       />
-                      {row.name}
+                      {fmtGroup(row.name)}
                     </span>
                   </td>
                   <td className="px-3 py-1.5 text-right">{row.count.toLocaleString()}</td>

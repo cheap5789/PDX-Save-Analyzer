@@ -19,6 +19,7 @@ from backend.parser.save_loader import load_save
 from backend.parser.eu5.field_catalog import FieldDef
 from backend.parser.eu5.snapshot import extract_snapshot
 from backend.parser.eu5.religions import extract_religion_statics, extract_religion_snapshot_rows
+from backend.parser.eu5.cultures import extract_culture_statics
 from backend.parser.eu5.wars import (
     extract_war_statics, extract_war_snapshot_rows,
     extract_all_war_participants,
@@ -186,6 +187,13 @@ async def run_backfill(
             await db.insert_religion_snapshots(pt_id, snap_id, save.game_date, rel_rows)
         except Exception:
             logger.warning(f"Backfill: religion extraction failed for {save_path.name}", exc_info=True)
+
+        # --- Cultures ---
+        try:
+            culture_rows = extract_culture_statics(save)
+            await db.bulk_upsert_cultures(pt_id, culture_rows)
+        except Exception:
+            logger.warning(f"Backfill: culture extraction failed for {save_path.name}", exc_info=True)
 
         # --- Wars ---
         try:

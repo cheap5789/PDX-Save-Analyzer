@@ -122,6 +122,10 @@ export function useApi() {
     /** GET /api/religions/:id — static religion records */
     getReligions: (playthroughId) => get(`/api/religions/${playthroughId}`),
 
+    // ── Cultures ────────────────────────────────────────────────
+    /** GET /api/cultures/:id — static culture records */
+    getCultures: (playthroughId) => get(`/api/cultures/${playthroughId}`),
+
     /** GET /api/religions/:id/snapshots?religion_id= */
     getReligionSnapshots: (playthroughId, { religion_id } = {}) => {
       const params = new URLSearchParams()

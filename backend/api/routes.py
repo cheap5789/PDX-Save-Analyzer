@@ -41,6 +41,7 @@ from backend.api.schemas import (
     UpdateAarNoteRequest, SavedConfig, LoadPlaythroughRequest,
     BackfillRequest, SaveScanResult,
     ReligionResponse, ReligionSnapshotResponse,
+    CultureResponse,
     WarResponse, WarSnapshotResponse, WarParticipantResponse,
     LocationResponse, LocationSnapshotResponse,
     ProvinceResponse, ProvinceSnapshotResponse,
@@ -383,6 +384,18 @@ async def get_religions(playthrough_id: str) -> list[ReligionResponse]:
             d["color_rgb"] = json.loads(d["color_rgb"])
         result.append(ReligionResponse(**d))
     return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/cultures/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/api/cultures/{playthrough_id}", response_model=list[CultureResponse])
+async def get_cultures(playthrough_id: str) -> list[CultureResponse]:
+    """List all culture static records for a playthrough."""
+    db = await _get_db()
+    rows = await db.get_cultures(playthrough_id)
+    return [CultureResponse(**dict(r)) for r in rows]
 
 
 # ---------------------------------------------------------------------------

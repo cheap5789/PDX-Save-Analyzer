@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useApi } from './hooks/useApi'
 import { useWebSocket } from './hooks/useWebSocket'
 import { CountryNamesContext } from './contexts/CountryNamesContext'
+import { GameLocalizationProvider } from './contexts/GameLocalizationContext.jsx'
 import { PerfProvider } from './contexts/PerfContext'
-import { AbortProvider, useAbortContext } from './contexts/AbortContext'
+import { AbortProvider, useAbortContext } from './contexts/AbortContext.jsx'
 import PerfPanel from './components/PerfPanel'
 import TabBar from './components/TabBar'
 import OverviewTab from './components/tabs/OverviewTab'
@@ -230,6 +231,7 @@ export default function App() {
     <PerfProvider>
     <AbortProvider>
     <CountryNamesContext.Provider value={tagMetaMap}>
+    <GameLocalizationProvider playthroughId={status?.playthrough_id}>
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--color-bg)' }}>
 
       {/* Header */}
@@ -285,6 +287,7 @@ export default function App() {
       </div>
 
     </div>
+    </GameLocalizationProvider>
     </CountryNamesContext.Provider>
     </AbortProvider>
     </PerfProvider>

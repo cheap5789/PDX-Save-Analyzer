@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useApi } from '../../hooks/useApi'
 import { usePerfTracker } from '../../hooks/usePerfTracker'
+import { useGameLocalization } from '../../contexts/GameLocalizationContext.jsx'
 
 const RANK_COLORS = {
   city: '#f59e0b',
@@ -19,6 +20,7 @@ const INTEGRATION_COLORS = {
 export default function TerritoryTab({ status }) {
   const api = useApi()
   const { track, fmt } = usePerfTracker('territory')
+  const gameLoc = useGameLocalization()
   const [locationData, setLocationData] = useState([])
   const [sortField, setSortField] = useState('development')
   const [sortDir, setSortDir] = useState('desc')
@@ -227,8 +229,8 @@ export default function TerritoryTab({ status }) {
                     <td className="px-2 py-1 capitalize" style={{ color: INTEGRATION_COLORS[loc.integration_type] }}>
                       {loc.integration_type || 'none'}
                     </td>
-                    <td className="px-2 py-1">{loc.culture_id}</td>
-                    <td className="px-2 py-1">{loc.religion_id}</td>
+                    <td className="px-2 py-1">{gameLoc ? gameLoc.fmtCulture(loc.culture_id) : loc.culture_id}</td>
+                    <td className="px-2 py-1">{gameLoc ? gameLoc.fmtReligion(loc.religion_id) : loc.religion_id}</td>
                     <td className="px-2 py-1">{(loc.garrison || 0).toFixed(2)}</td>
                     <td className="px-2 py-1 capitalize">{(loc.language || '').replace(/_/g, ' ')}</td>
                   </tr>

@@ -4,6 +4,7 @@ import {
 } from 'recharts'
 import { useApi } from '../../hooks/useApi'
 import { usePerfTracker } from '../../hooks/usePerfTracker'
+import { useGameLocalization } from '../../contexts/GameLocalizationContext.jsx'
 
 const LINE_COLORS = [
   '#3b82f6', '#ef4444', '#22c55e', '#f59e0b',
@@ -13,6 +14,7 @@ const LINE_COLORS = [
 export default function ReligionsTab({ status }) {
   const api = useApi()
   const { track } = usePerfTracker('religions')
+  const gameLoc = useGameLocalization()
   const [religions, setReligions] = useState([])
   const [snapshots, setSnapshots] = useState([])
   const [selectedField, setSelectedField] = useState('reform_desire')
@@ -44,14 +46,12 @@ export default function ReligionsTab({ status }) {
     return () => { cancelled = true }
   }, [ptId])
 
-  // Build a lookup: religion_id → name
-  const religionNames = useMemo(() => {
-    const map = {}
-    religions.forEach((r) => {
-      map[r.id] = r.name || r.definition || `Religion #${r.id}`
-    })
-    return map
-  }, [religions])
+  // Name helper: use shared context if loaded, fall back to local statics list
+  const fmtReligion = (id) => {
+    if (gameLoc?.fmtReligion) return gameLoc.fmtReligion(id)
+    const r = religions.find((x) => x.id === id)
+    return r?.name || r?.definition || `#${id}`
+  }
 
   // Religions that appear in snapshot data (have dynamic fields)
   const religionsWithData = useMemo(() => {
@@ -68,16 +68,14 @@ export default function ReligionsTab({ status }) {
     snapshots.forEach((s) => {
       if (!selectedReligions.includes(s.religion_id)) return
       if (!byDate[s.game_date]) byDate[s.game_date] = { date: s.game_date }
-      const name = religionNames[s.religion_id] || `#${s.religion_id}`
+      const name = fmtReligion(s.religion_id)
       byDate[s.game_date][name] = s[selectedField]
     })
 
     return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
-  }, [snapshots, selectedReligions, selectedField, religionNames])
+  }, [snapshots, selectedReligions, selectedField, gameLoc])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const selectedNames = selectedReligions.map(
-    (id) => religionNames[id] || `#${id}`
-  )
+  const selectedNames = selectedReligions.map((id) => fmtReligion(id))
 
   const SNAPSHOT_FIELDS = [
     { key: 'reform_desire', label: 'Reform Desire' },

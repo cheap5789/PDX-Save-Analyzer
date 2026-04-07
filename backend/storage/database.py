@@ -130,6 +130,18 @@ CREATE TABLE IF NOT EXISTS religion_snapshots (
 CREATE INDEX IF NOT EXISTS idx_religion_snap
     ON religion_snapshots(playthrough_id, snapshot_id);
 
+-- ── Culture entity table ────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS cultures (
+    id              INTEGER NOT NULL,
+    playthrough_id  TEXT    NOT NULL,
+    definition      TEXT    NOT NULL,          -- string key e.g. "upper_german_culture"
+    name            TEXT,                      -- display name (localised)
+    culture_group   TEXT,                      -- e.g. "west_germanic"
+    PRIMARY KEY (playthrough_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_cultures_id ON cultures(playthrough_id, id);
+
 -- ── War entity tables ───────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS wars (
@@ -859,6 +871,49 @@ class Database:
         """Get all religion static records for a playthrough."""
         cursor = await self.conn.execute(
             "SELECT * FROM religions WHERE playthrough_id = ? ORDER BY id",
+            (playthrough_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Cultures
+    # ------------------------------------------------------------------
+
+    async def bulk_upsert_cultures(
+        self,
+        playthrough_id: str,
+        rows: list[dict],
+    ) -> int:
+        """Upsert culture static rows.  ON CONFLICT updates name so later
+        saves (with fuller localisation) can override earlier stubs."""
+        if not rows:
+            return 0
+        data = [
+            (
+                playthrough_id,
+                r["culture_id"],
+                r["definition"],
+                r.get("name"),
+                r.get("culture_group", ""),
+            )
+            for r in rows
+        ]
+        await self.conn.executemany(
+            """INSERT INTO cultures
+               (playthrough_id, id, definition, name, culture_group)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(playthrough_id, id) DO UPDATE SET
+                   name         = COALESCE(excluded.name, name),
+                   culture_group = COALESCE(excluded.culture_group, culture_group)""",
+            data,
+        )
+        await self.conn.commit()
+        return len(data)
+
+    async def get_cultures(self, playthrough_id: str) -> list[dict]:
+        """Get all culture static records for a playthrough."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM cultures WHERE playthrough_id = ? ORDER BY id",
             (playthrough_id,),
         )
         return [dict(r) for r in await cursor.fetchall()]

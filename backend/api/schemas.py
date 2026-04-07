@@ -133,6 +133,15 @@ class ReligionResponse(BaseModel):
     definition: str
     name: str = ""
     religion_group: str = ""
+
+
+class CultureResponse(BaseModel):
+    """Static culture record."""
+    id: int
+    playthrough_id: str
+    definition: str
+    name: str = ""
+    culture_group: str = ""
     has_religious_head: bool = False
     color_rgb: list | None = None
 
