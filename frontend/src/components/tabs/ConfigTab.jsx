@@ -35,7 +35,14 @@ export default function ConfigTab({ status, onStatusChange, backfillProgress }) 
   const [success, setSuccess] = useState(null)
   const [loading, setLoading] = useState(false)
 
-  // Backfill state
+  // Field selector visibility (collapsed by default)
+  const [fieldsOpen, setFieldsOpen] = useState(false)
+
+  // Scan & Backfill state
+  const [scanResults, setScanResults] = useState(null)     // null = not yet scanned
+  const [scanning, setScanning] = useState(false)
+  const [scanError, setScanError] = useState(null)
+  const [selectedScanPlaythrough, setSelectedScanPlaythrough] = useState('')
   const [backfillRunning, setBackfillRunning] = useState(false)
   const [backfillError, setBackfillError] = useState(null)
 
@@ -160,12 +167,35 @@ export default function ConfigTab({ status, onStatusChange, backfillProgress }) 
     }
   }, [backfillProgress?.done])
 
+  const handleScan = async () => {
+    if (!config.save_directory) return
+    setScanError(null)
+    setScanning(true)
+    setScanResults(null)
+    setSelectedScanPlaythrough('')
+    try {
+      const results = await api.scanSaves(config.save_directory, config.game)
+      setScanResults(results)
+      // Auto-select the active playthrough if it appears in results
+      if (status?.playthrough_id && results.some((r) => r.playthrough_id === status.playthrough_id)) {
+        setSelectedScanPlaythrough(status.playthrough_id)
+      } else if (results.length === 1) {
+        setSelectedScanPlaythrough(results[0].playthrough_id)
+      }
+    } catch (e) {
+      setScanError(e.message)
+    } finally {
+      setScanning(false)
+    }
+  }
+
   const handleBackfill = async () => {
-    if (!status?.playthrough_id || !config.save_directory) return
+    const ptId = selectedScanPlaythrough || status?.playthrough_id
+    if (!ptId || !config.save_directory) return
     setBackfillError(null)
     setBackfillRunning(true)
     try {
-      await api.startBackfill(status.playthrough_id, {
+      await api.startBackfill(ptId, {
         save_directory: config.save_directory,
         game_install_path: config.game_install_path,
         language: config.language,
@@ -261,55 +291,67 @@ export default function ConfigTab({ status, onStatusChange, backfillProgress }) 
         </div>
       </div>
 
-      {/* Field toggles */}
+      {/* Field toggles — collapsed by default */}
       <div>
-        <div className="flex items-center gap-3 mb-2">
-          <label className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+        {/* Clickable header row */}
+        <button
+          onClick={() => setFieldsOpen((v) => !v)}
+          className="flex items-center gap-2 w-full text-left"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+        >
+          <span className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
             Tracked Fields ({config.enabled_field_keys.length} / {fields.length})
-          </label>
-          {!running && (
-            <div className="flex gap-1">
+          </span>
+          <span style={{ color: 'var(--color-text-muted)', fontSize: 10, marginLeft: 2 }}>
+            {fieldsOpen ? '▲' : '▼'}
+          </span>
+          {!running && fieldsOpen && (
+            <div className="flex gap-1 ml-2" onClick={(e) => e.stopPropagation()}>
               <button onClick={selectAll} className="text-xs px-2 py-0.5 rounded" style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text-muted)' }}>All</button>
               <button onClick={selectNone} className="text-xs px-2 py-0.5 rounded" style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text-muted)' }}>None</button>
             </div>
           )}
-        </div>
-        <div className="space-y-3">
-          {FIELD_CATEGORIES.map((cat) => {
-            const catFields = fields.filter((f) => f.category === cat)
-            if (catFields.length === 0) return null
-            return (
-              <div key={cat}>
-                <div className="text-xs font-medium capitalize mb-1" style={{ color: 'var(--color-accent)' }}>
-                  {cat}
+        </button>
+
+        {/* Collapsible body */}
+        {fieldsOpen && (
+          <div className="space-y-3 mt-2">
+            {FIELD_CATEGORIES.map((cat) => {
+              const catFields = fields.filter((f) => f.category === cat)
+              if (catFields.length === 0) return null
+              return (
+                <div key={cat}>
+                  <div className="text-xs font-medium capitalize mb-1" style={{ color: 'var(--color-accent)' }}>
+                    {cat}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {catFields.map((f) => {
+                      const active = config.enabled_field_keys.includes(f.key)
+                      return (
+                        <button
+                          key={f.key}
+                          onClick={() => !running && toggleField(f.key)}
+                          disabled={running}
+                          title={f.description || f.display_name}
+                          className="px-2 py-0.5 text-xs rounded transition-colors"
+                          style={{
+                            background: active ? 'var(--color-accent)' : 'var(--color-surface-alt)',
+                            color: active ? '#fff' : 'var(--color-text-muted)',
+                            border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                            opacity: running ? 0.5 : 1,
+                            cursor: running ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          {f.display_name}
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-1">
-                  {catFields.map((f) => {
-                    const active = config.enabled_field_keys.includes(f.key)
-                    return (
-                      <button
-                        key={f.key}
-                        onClick={() => !running && toggleField(f.key)}
-                        disabled={running}
-                        title={f.description || f.display_name}
-                        className="px-2 py-0.5 text-xs rounded transition-colors"
-                        style={{
-                          background: active ? 'var(--color-accent)' : 'var(--color-surface-alt)',
-                          color: active ? '#fff' : 'var(--color-text-muted)',
-                          border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
-                          opacity: running ? 0.5 : 1,
-                          cursor: running ? 'not-allowed' : 'pointer',
-                        }}
-                      >
-                        {f.display_name}
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* Load existing playthrough section */}
@@ -347,35 +389,116 @@ export default function ConfigTab({ status, onStatusChange, backfillProgress }) 
         </div>
       )}
 
-      {/* Import Historical Saves */}
-      {status?.playthrough_id && (
+      {/* Scan & Import Historical Saves */}
+      {config.save_directory && (
         <div className="rounded-lg p-4" style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)' }}>
-          <div className="flex items-center justify-between mb-2">
+          {/* Header row */}
+          <div className="flex items-center justify-between mb-3">
             <div>
               <div className="text-sm font-medium">Import Historical Saves</div>
               <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-muted)' }}>
-                Scan the save folder for existing saves belonging to this playthrough and add them to the database.
+                Scan the save folder to discover playthroughs, then import saves into the database.
               </div>
             </div>
             <button
-              onClick={handleBackfill}
-              disabled={backfillRunning || !config.save_directory}
-              className="ml-4 px-4 py-1.5 rounded text-sm font-medium text-white shrink-0"
+              onClick={handleScan}
+              disabled={scanning || backfillRunning}
+              className="ml-4 px-4 py-1.5 rounded text-sm font-medium shrink-0"
               style={{
-                background: backfillRunning || !config.save_directory
-                  ? 'var(--color-surface-alt)'
-                  : 'var(--color-accent)',
-                color: backfillRunning || !config.save_directory ? 'var(--color-text-muted)' : '#fff',
-                cursor: backfillRunning || !config.save_directory ? 'not-allowed' : 'pointer',
+                background: scanning || backfillRunning ? 'var(--color-surface-alt)' : 'var(--color-accent)',
+                color: scanning || backfillRunning ? 'var(--color-text-muted)' : '#fff',
+                cursor: scanning || backfillRunning ? 'not-allowed' : 'pointer',
               }}
             >
-              {backfillRunning ? 'Scanning…' : 'Start Import'}
+              {scanning ? 'Scanning…' : scanResults ? 'Rescan' : 'Scan Saves'}
             </button>
           </div>
 
+          {/* Scan error */}
+          {scanError && (
+            <div className="mb-3 text-xs rounded p-2" style={{ background: 'rgba(239,68,68,0.15)', color: 'var(--color-danger)' }}>
+              {scanError}
+            </div>
+          )}
+
+          {/* Scan results — playthrough picker */}
+          {scanResults && (
+            <div className="mb-3">
+              {scanResults.length === 0 ? (
+                <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+                  No .eu5 saves found in the configured save directory.
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {scanResults.map((r) => {
+                    const isSelected = selectedScanPlaythrough === r.playthrough_id
+                    return (
+                      <label
+                        key={r.playthrough_id}
+                        className="flex items-center gap-3 px-3 py-2 rounded cursor-pointer"
+                        style={{
+                          background: isSelected ? 'rgba(99,102,241,0.12)' : 'var(--color-surface-alt)',
+                          border: `1px solid ${isSelected ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="scan_playthrough"
+                          value={r.playthrough_id}
+                          checked={isSelected}
+                          onChange={() => setSelectedScanPlaythrough(r.playthrough_id)}
+                          disabled={backfillRunning}
+                          style={{ accentColor: 'var(--color-accent)' }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-medium">{r.country_name || 'Unknown'}</span>
+                            <span
+                              className="text-xs px-1.5 py-0.5 rounded-full"
+                              style={{ background: 'var(--color-accent)', color: '#fff', opacity: 0.85 }}
+                            >
+                              {r.save_count} save{r.save_count !== 1 ? 's' : ''}
+                            </span>
+                            {r.multiplayer && (
+                              <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}>
+                                MP
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs mt-0.5 truncate" style={{ color: 'var(--color-text-muted)' }}>
+                            {r.earliest_date} → {r.latest_date}
+                            <span className="ml-2 opacity-50">{r.playthrough_id.slice(0, 8)}…</span>
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* Import button */}
+              {scanResults.length > 0 && (
+                <button
+                  onClick={handleBackfill}
+                  disabled={!selectedScanPlaythrough || backfillRunning}
+                  className="mt-3 px-4 py-1.5 rounded text-sm font-medium w-full"
+                  style={{
+                    background: !selectedScanPlaythrough || backfillRunning
+                      ? 'var(--color-surface-alt)'
+                      : 'var(--color-success)',
+                    color: !selectedScanPlaythrough || backfillRunning ? 'var(--color-text-muted)' : '#fff',
+                    cursor: !selectedScanPlaythrough || backfillRunning ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {backfillRunning ? 'Importing…' : 'Import Selected'}
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Progress */}
           {(backfillRunning || backfillProgress) && (
-            <div className="mt-3 space-y-2">
+            <div className="space-y-2">
               {/* Progress bar */}
               {backfillProgress && backfillProgress.total > 0 && (
                 <div className="w-full rounded-full h-1.5" style={{ background: 'var(--color-surface-alt)' }}>
@@ -406,7 +529,7 @@ export default function ConfigTab({ status, onStatusChange, backfillProgress }) 
                     <span style={{ color: 'var(--color-danger)' }}>{backfillProgress.errors} errors</span>
                   )}
                   {backfillProgress.done && (
-                    <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>Done</span>
+                    <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>✓ Done</span>
                   )}
                 </div>
               )}

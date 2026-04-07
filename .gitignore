@@ -45,7 +45,8 @@ desktop.ini
 # === Logs ===
 *.log
 logs/
-
+# === test saves
+saves/
 # === Secrets / env ===
 .env
 .env.*

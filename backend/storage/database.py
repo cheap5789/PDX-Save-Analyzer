@@ -235,12 +235,15 @@ CREATE TABLE IF NOT EXISTS location_snapshots (
     -- Geopolitical Status
     integration_type TEXT,                      -- "core", "integrated", "conquered", "colonized", "none"
     integration_owner_id INTEGER,
-    slave_raid_date TEXT                        -- nullable; date of last slave raid
+    slave_raid_date TEXT,                       -- nullable; date of last slave raid
+    owner_tag TEXT                              -- resolved country tag for owner_id (e.g. "BAV")
 );
 CREATE INDEX IF NOT EXISTS idx_loc_snap_pt
     ON location_snapshots(playthrough_id, snapshot_id);
 CREATE INDEX IF NOT EXISTS idx_loc_snap_loc
     ON location_snapshots(playthrough_id, location_id, game_date);
+CREATE INDEX IF NOT EXISTS idx_loc_snap_owner_tag
+    ON location_snapshots(playthrough_id, owner_tag);
 
 CREATE TABLE IF NOT EXISTS provinces (
     id              INTEGER NOT NULL,           -- province_id from provinces.database key
@@ -292,6 +295,21 @@ CREATE INDEX IF NOT EXISTS idx_pop_snap_loc
     ON pop_snapshots(playthrough_id, location_id, game_date);
 CREATE INDEX IF NOT EXISTS idx_pop_snap_type
     ON pop_snapshots(playthrough_id, type, game_date);
+
+-- ── Country reference table ──────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS countries (
+    playthrough_id  TEXT    NOT NULL,
+    country_id      INTEGER NOT NULL,   -- numeric game ID
+    tag             TEXT    NOT NULL,   -- 3-letter TAG e.g. "BAV", "FRA"
+    name            TEXT,               -- localised display name (nullable)
+    prev_tags       TEXT,               -- JSON array of predecessor TAGs (nullable)
+    canonical_tag   TEXT NOT NULL,      -- terminal TAG in succession chain (self if no successor)
+    PRIMARY KEY (playthrough_id, country_id),
+    UNIQUE (playthrough_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_countries_tag ON countries(playthrough_id, tag);
+CREATE INDEX IF NOT EXISTS idx_countries_canonical ON countries(playthrough_id, canonical_tag);
 """
 
 
@@ -418,6 +436,25 @@ class Database:
             "ON events(playthrough_id, country_tag)"
         )
         await self.conn.commit()
+
+        # --- Migration 3: owner_tag column on location_snapshots ---
+        cursor = await self.conn.execute("PRAGMA table_info(location_snapshots)")
+        loc_cols = {row[1] for row in await cursor.fetchall()}
+        if "owner_tag" not in loc_cols:
+            await self.conn.execute(
+                "ALTER TABLE location_snapshots ADD COLUMN owner_tag TEXT"
+            )
+            # Index created idempotently below
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loc_snap_owner_tag "
+            "ON location_snapshots(playthrough_id, owner_tag)"
+        )
+        await self.conn.commit()
+        if "owner_tag" not in loc_cols:
+            logger.info(
+                "DB migration: added owner_tag column + index to location_snapshots; "
+                "run backfill to populate existing data"
+            )
 
     async def close(self) -> None:
         if self._conn:
@@ -1004,7 +1041,7 @@ class Database:
             return 0
         data = [
             (playthrough_id, snapshot_id, r["location_id"], game_date,
-             r.get("owner_id"), r.get("controller_id"), r.get("previous_owner_id"),
+             r.get("owner_id"), r.get("owner_tag"), r.get("controller_id"), r.get("previous_owner_id"),
              r.get("last_owner_change"), r.get("last_controller_change"),
              json.dumps(r["cores"]) if r.get("cores") else None,
              r.get("garrison"), r.get("control"),
@@ -1022,7 +1059,7 @@ class Database:
         await self.conn.executemany(
             """INSERT INTO location_snapshots
                (playthrough_id, snapshot_id, location_id, game_date,
-                owner_id, controller_id, previous_owner_id,
+                owner_id, owner_tag, controller_id, previous_owner_id,
                 last_owner_change, last_controller_change,
                 cores, garrison, control,
                 culture_id, secondary_culture_id, cultural_unity,
@@ -1034,7 +1071,7 @@ class Database:
                 institutions,
                 integration_type, integration_owner_id,
                 slave_raid_date)
-               VALUES (?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?, ?,?,?)""",
+               VALUES (?,?,?,?, ?,?,?,?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?, ?,?,?)""",
             data,
         )
         return len(data)
@@ -1220,34 +1257,30 @@ class Database:
     async def get_pop_aggregates(
         self,
         playthrough_id: str,
-        snapshot_id: int | None = None,
-        owner_id: int | None = None,
         group_by: str = "type",
+        from_date: str | None = None,
+        to_date: str | None = None,
+        owner_tags: list[str] | None = None,
     ) -> list[dict]:
-        """Get aggregated pop data (SUM(size), AVG(satisfaction), AVG(literacy)).
+        """Get aggregated pop data grouped by a dimension over a date range.
 
-        group_by: "type", "culture_id", "religion_id", "status", "location_id"
+        group_by:   "type", "culture_id", "religion_id", "status", "location_id", "estate"
+        from_date:  EU5 game date string lower bound e.g. "1444.11.11"
+        to_date:    EU5 game date string upper bound — defaults to from_date (point-in-time)
+        owner_tags: list of country TAGs to filter by (e.g. ["SWI","BRN"] for Switzerland
+                    including its predecessor Bern) — resolved via location_snapshots.owner_tag
         """
         valid_groups = {"type", "culture_id", "religion_id", "status", "location_id", "estate"}
         if group_by not in valid_groups:
             group_by = "type"
 
-        query = f"""
-            SELECT {group_by},
-                   game_date,
-                   COUNT(*) as pop_count,
-                   SUM(size) as total_size,
-                   AVG(satisfaction) as avg_satisfaction,
-                   AVG(literacy) as avg_literacy
-            FROM pop_snapshots
-            WHERE playthrough_id = ?
-        """
-        params: list[Any] = [playthrough_id]
-        if snapshot_id is not None:
-            query += " AND snapshot_id = ?"
-            params.append(snapshot_id)
-        if owner_id is not None:
-            # Join via location_snapshots to get pops for a specific country
+        # Normalise date range
+        if from_date and not to_date:
+            to_date = from_date  # point-in-time
+
+        if owner_tags:
+            # Join via location_snapshots to filter by owning countries
+            ph = ",".join("?" * len(owner_tags))
             query = f"""
                 SELECT ps.{group_by},
                        ps.game_date,
@@ -1258,18 +1291,157 @@ class Database:
                 FROM pop_snapshots ps
                 JOIN location_snapshots ls
                     ON ps.playthrough_id = ls.playthrough_id
-                    AND ps.snapshot_id = ls.snapshot_id
-                    AND ps.location_id = ls.location_id
+                   AND ps.snapshot_id   = ls.snapshot_id
+                   AND ps.location_id   = ls.location_id
                 WHERE ps.playthrough_id = ?
-                    AND ls.owner_id = ?
+                  AND ls.owner_tag IN ({ph})
             """
-            params = [playthrough_id, owner_id]
-            if snapshot_id is not None:
-                query += " AND ps.snapshot_id = ?"
-                params.append(snapshot_id)
-            query += f" GROUP BY ps.{group_by}, ps.game_date ORDER BY ps.game_date ASC"
+            params: list[Any] = [playthrough_id, *owner_tags]
         else:
-            query += f" GROUP BY {group_by}, game_date ORDER BY game_date ASC"
+            query = f"""
+                SELECT {group_by},
+                       game_date,
+                       COUNT(*) as pop_count,
+                       SUM(size) as total_size,
+                       AVG(satisfaction) as avg_satisfaction,
+                       AVG(literacy) as avg_literacy
+                FROM pop_snapshots
+                WHERE playthrough_id = ?
+            """
+            params = [playthrough_id]
+
+        if from_date:
+            query += " AND ps.game_date >= ?" if owner_tags else " AND game_date >= ?"
+            params.append(from_date)
+        if to_date:
+            query += " AND ps.game_date <= ?" if owner_tags else " AND game_date <= ?"
+            params.append(to_date)
+
+        group_col = f"ps.{group_by}" if owner_tags else group_by
+        date_col = "ps.game_date" if owner_tags else "game_date"
+        query += f" GROUP BY {group_col}, {date_col} ORDER BY {date_col} ASC"
 
         cursor = await self.conn.execute(query, params)
+        return [dict(r) for r in await cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Countries
+    # ------------------------------------------------------------------
+
+    async def bulk_upsert_countries(
+        self,
+        playthrough_id: str,
+        rows: list[dict],
+    ) -> int:
+        """Upsert country reference rows.  ON CONFLICT updates name and prev_tags
+        so later saves (with richer data) can overwrite earlier stubs.
+        canonical_tag is set to tag on first insert; call
+        finalize_country_canonical_tags() after the full backfill to propagate
+        succession chains.
+        """
+        if not rows:
+            return 0
+        data = [
+            (
+                playthrough_id,
+                r["country_id"],
+                r["tag"],
+                r.get("name"),
+                json.dumps(r["prev_tags"]) if r.get("prev_tags") else None,
+                r["tag"],  # canonical_tag defaults to self
+            )
+            for r in rows
+        ]
+        await self.conn.executemany(
+            """INSERT INTO countries
+               (playthrough_id, country_id, tag, name, prev_tags, canonical_tag)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(playthrough_id, country_id) DO UPDATE SET
+                   name = COALESCE(excluded.name, name),
+                   prev_tags = COALESCE(excluded.prev_tags, prev_tags)""",
+            data,
+        )
+        await self.conn.commit()
+        return len(data)
+
+    async def get_countries(self, playthrough_id: str) -> list[dict]:
+        """Return all country rows for a playthrough, ordered by tag."""
+        cursor = await self.conn.execute(
+            "SELECT * FROM countries WHERE playthrough_id = ? ORDER BY tag",
+            (playthrough_id,),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def finalize_country_canonical_tags(self, playthrough_id: str) -> None:
+        """Walk prev_tags chains and update canonical_tag to the terminal successor.
+
+        For example: BRN has prev_tags=null, SWI has prev_tags=["BRN"].
+        After this call, BRN.canonical_tag = "SWI" and SWI.canonical_tag = "SWI".
+        """
+        rows = await self.get_countries(playthrough_id)
+        # Build tag → current canonical
+        canonical: dict[str, str] = {r["tag"]: r["tag"] for r in rows}
+
+        # Build predecessor → successor mapping from prev_tags
+        predecessor_of: dict[str, str] = {}  # old_tag -> new_tag
+        for r in rows:
+            if r.get("prev_tags"):
+                try:
+                    prev_list = json.loads(r["prev_tags"])
+                    for old_tag in prev_list:
+                        predecessor_of[old_tag] = r["tag"]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Propagate: follow chains until stable
+        changed = True
+        while changed:
+            changed = False
+            for old_tag, new_tag in predecessor_of.items():
+                if old_tag not in canonical:
+                    canonical[old_tag] = new_tag
+                    changed = True
+                    continue
+                # new_tag's canonical (in case it too was superseded)
+                target = canonical.get(new_tag, new_tag)
+                if canonical[old_tag] != target:
+                    canonical[old_tag] = target
+                    changed = True
+
+        # Write back only rows whose canonical_tag changed
+        updates = [
+            (canonical[r["tag"]], playthrough_id, r["tag"])
+            for r in rows
+            if canonical.get(r["tag"], r["tag"]) != r.get("canonical_tag", r["tag"])
+        ]
+        if updates:
+            await self.conn.executemany(
+                "UPDATE countries SET canonical_tag = ? WHERE playthrough_id = ? AND tag = ?",
+                updates,
+            )
+            await self.conn.commit()
+            logger.info(
+                f"finalize_country_canonical_tags: updated {len(updates)} rows "
+                f"for playthrough {playthrough_id}"
+            )
+
+    async def get_pop_country_owners(self, playthrough_id: str) -> list[dict]:
+        """Return distinct country tags that own locations, with their latest game date.
+
+        Used to populate the country picker in the Demographics tab.
+        Results are sorted alphabetically by owner_tag.
+        """
+        cursor = await self.conn.execute(
+            """
+            SELECT owner_tag,
+                   MAX(game_date) as latest_game_date,
+                   COUNT(DISTINCT location_id) as location_count
+            FROM location_snapshots
+            WHERE playthrough_id = ?
+              AND owner_tag IS NOT NULL
+            GROUP BY owner_tag
+            ORDER BY owner_tag ASC
+            """,
+            (playthrough_id,),
+        )
         return [dict(r) for r in await cursor.fetchall()]

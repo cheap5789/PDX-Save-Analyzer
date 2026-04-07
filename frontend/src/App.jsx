@@ -3,6 +3,7 @@ import { useApi } from './hooks/useApi'
 import { useWebSocket } from './hooks/useWebSocket'
 import { CountryNamesContext } from './contexts/CountryNamesContext'
 import { PerfProvider } from './contexts/PerfContext'
+import { AbortProvider, useAbortContext } from './contexts/AbortContext'
 import PerfPanel from './components/PerfPanel'
 import TabBar from './components/TabBar'
 import OverviewTab from './components/tabs/OverviewTab'
@@ -13,6 +14,73 @@ import ReligionsTab from './components/tabs/ReligionsTab'
 import WarsTab from './components/tabs/WarsTab'
 import TerritoryTab from './components/tabs/TerritoryTab'
 import DemographicsTab from './components/tabs/DemographicsTab'
+
+/** Header extracted so it can consume AbortContext (which lives inside App's JSX tree). */
+function AppHeader({ perfOpen, setPerfOpen }) {
+  const abort = useAbortContext()
+  const hasActive = abort?.activeCount > 0
+
+  return (
+    <header className="px-6 pt-4 pb-0 flex items-center justify-between">
+      <h1 className="text-xl font-bold tracking-tight">PDX Save Analyzer</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Abort button — top-right, always visible */}
+        <button
+          onClick={() => abort?.abortAll()}
+          title={hasActive ? `Cancel ${abort.activeCount} active request(s)` : 'No active requests'}
+          disabled={!hasActive}
+          style={{
+            background: hasActive ? '#ef4444' : 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 6,
+            padding: '3px 9px',
+            cursor: hasActive ? 'pointer' : 'not-allowed',
+            fontSize: 13,
+            color: hasActive ? '#fff' : 'var(--color-text-muted)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            opacity: hasActive ? 1 : 0.5,
+            transition: 'background 0.15s, color 0.15s, opacity 0.15s',
+          }}
+        >
+          {/* Spinning dot when active */}
+          {hasActive && (
+            <span style={{
+              width: 7, height: 7, borderRadius: '50%', background: '#fff',
+              display: 'inline-block', animation: 'pulse 1s infinite',
+            }} />
+          )}
+          <span style={{ fontSize: 11, fontWeight: 500 }}>
+            {hasActive ? `Abort (${abort.activeCount})` : 'Abort'}
+          </span>
+        </button>
+
+        {/* Perf panel toggle */}
+        <button
+          onClick={() => setPerfOpen((v) => !v)}
+          title="Toggle performance monitor"
+          style={{
+            background: perfOpen ? 'var(--color-accent)' : 'var(--color-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 6,
+            padding: '3px 9px',
+            cursor: 'pointer',
+            fontSize: 13,
+            color: perfOpen ? '#fff' : 'var(--color-text-muted)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            transition: 'background 0.15s, color 0.15s',
+          }}
+        >
+          <span>⏱</span>
+          <span style={{ fontSize: 11, fontWeight: 500 }}>Perf</span>
+        </button>
+      </div>
+    </header>
+  )
+}
 
 export default function App() {
   const api = useApi()
@@ -64,7 +132,8 @@ export default function App() {
 
     Promise.all([
       api.getSnapshots(ptId, {}).catch(() => []),
-      api.getEvents(ptId, {}).catch(() => []),
+      // Small fetch for OverviewTab's recent-events feed — EventsTab does its own full query
+      api.getEvents(ptId, { limit: 20 }).catch(() => []),
     ]).then(([snaps, evts]) => {
       // Flatten REST snapshots to match WebSocket shape:
       // REST: { id, playthrough_id, game_date, recorded_at, data: { countries, ... } }
@@ -109,13 +178,6 @@ export default function App() {
     )
     return [...historicalEvents, ...newLive]
   }, [historicalEvents, liveEvents])
-
-  // Callback when an AAR note is updated
-  const handleEventNoteUpdated = useCallback((eventId, noteText) => {
-    setHistoricalEvents((prev) =>
-      prev.map((e) => (e.id === eventId ? { ...e, aar_note: noteText } : e))
-    )
-  }, [])
 
   // Build tag → { name, color, prevTags } metadata from snapshots
   // (_name, _color, _prev_tags are embedded by the backend's snapshot.py)
@@ -166,34 +228,12 @@ export default function App() {
 
   return (
     <PerfProvider>
+    <AbortProvider>
     <CountryNamesContext.Provider value={tagMetaMap}>
     <div className="min-h-screen flex flex-col" style={{ background: 'var(--color-bg)' }}>
 
       {/* Header */}
-      <header className="px-6 pt-4 pb-0 flex items-center justify-between">
-        <h1 className="text-xl font-bold tracking-tight">PDX Save Analyzer</h1>
-        {/* Perf panel toggle */}
-        <button
-          onClick={() => setPerfOpen((v) => !v)}
-          title="Toggle performance monitor"
-          style={{
-            background: perfOpen ? 'var(--color-accent)' : 'var(--color-surface)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 6,
-            padding: '3px 9px',
-            cursor: 'pointer',
-            fontSize: 13,
-            color: perfOpen ? '#fff' : 'var(--color-text-muted)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 5,
-            transition: 'background 0.15s, color 0.15s',
-          }}
-        >
-          <span>⏱</span>
-          <span style={{ fontSize: 11, fontWeight: 500 }}>Perf</span>
-        </button>
-      </header>
+      <AppHeader perfOpen={perfOpen} setPerfOpen={setPerfOpen} />
 
       {/* Tab bar with connection indicator */}
       <TabBar active={activeTab} onChange={setActiveTab} connected={connected} />
@@ -214,7 +254,11 @@ export default function App() {
             />
           )}
           {activeTab === 'events' && (
-            <EventsTab events={allEvents} status={status} onEventNoteUpdated={handleEventNoteUpdated} />
+            <EventsTab
+              playthroughId={status?.playthrough_id}
+              liveEvents={liveEvents}
+              status={status}
+            />
           )}
           {activeTab === 'religions' && (
             <ReligionsTab status={status} />
@@ -226,7 +270,10 @@ export default function App() {
             <TerritoryTab status={status} />
           )}
           {activeTab === 'demographics' && (
-            <DemographicsTab status={status} />
+            <DemographicsTab
+              status={status}
+              allSnapshots={allSnapshots}
+            />
           )}
           {activeTab === 'config' && (
             <ConfigTab status={status} onStatusChange={handleStatusChange} backfillProgress={backfillProgress} />
@@ -239,6 +286,7 @@ export default function App() {
 
     </div>
     </CountryNamesContext.Provider>
+    </AbortProvider>
     </PerfProvider>
   )
 }

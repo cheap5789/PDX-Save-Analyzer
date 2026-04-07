@@ -28,6 +28,7 @@ from backend.parser.eu5.geography import (
     extract_province_statics, extract_province_snapshot_rows,
 )
 from backend.parser.eu5.demographics import extract_pop_snapshot_rows
+from backend.parser.eu5.countries import extract_country_rows
 from backend.storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -212,6 +213,13 @@ async def run_backfill(
         except Exception:
             logger.warning(f"Backfill: geography extraction failed for {save_path.name}", exc_info=True)
 
+        # --- Countries ---
+        try:
+            country_rows = extract_country_rows(save)
+            await db.bulk_upsert_countries(pt_id, country_rows)
+        except Exception:
+            logger.warning(f"Backfill: country extraction failed for {save_path.name}", exc_info=True)
+
         # --- Demographics ---
         try:
             pop_rows = extract_pop_snapshot_rows(save)
@@ -220,6 +228,13 @@ async def run_backfill(
             logger.warning(f"Backfill: demographics extraction failed for {save_path.name}", exc_info=True)
 
         added += 1
+
+    # Finalise country succession chains now that all saves have been processed
+    if matched > 0:
+        try:
+            await db.finalize_country_canonical_tags(playthrough_id)
+        except Exception:
+            logger.warning("Backfill: finalize_country_canonical_tags failed", exc_info=True)
 
     # Final broadcast
     await _progress({

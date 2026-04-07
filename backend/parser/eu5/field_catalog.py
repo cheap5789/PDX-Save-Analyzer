@@ -988,24 +988,19 @@ FIELD_CATALOG: list[FieldDef] = [
         default_enabled=True,
         description="Total researched advances (primary tech level indicator)",
     ),
-    FieldDef(
-        key="starting_technology_level",
-        display_name="Starting Tech Level",
-        json_path="starting_technology_level",
-        value_type="int",
-        category="technology",
-        default_enabled=False,
-        description="Starting tech level (static — does not change during game)",
-    ),
-    FieldDef(
-        key="current_research_progress",
-        display_name="Research Progress",
-        json_path="current_research.progress",
-        value_type="float",
-        category="technology",
-        default_enabled=True,
-        description="Progress on current research (threshold is variable per advance).",
-    ),
+    # research_rate: path TBD — needs confirming from a real save via
+    #   rakaly melt -c <save.eu5> | grep research_speed
+    # Expected path: something like "modifiers.research_speed_modifier"
+    # Uncomment and set json_path once confirmed:
+    # FieldDef(
+    #     key="research_rate",
+    #     display_name="Research Rate",
+    #     json_path="???",
+    #     value_type="float",
+    #     category="technology",
+    #     default_enabled=True,
+    #     description="Research speed modifier (1–3); higher = faster advance acquisition",
+    # ),
 
     # ── Counters (cumulative lifetime stats) ─────────────────────────────
     FieldDef(

@@ -39,12 +39,13 @@ from backend.api.schemas import (
     StartRequest, StatusResponse, PlaythroughResponse,
     SnapshotResponse, EventResponse, FieldDefResponse, WsMessage,
     UpdateAarNoteRequest, SavedConfig, LoadPlaythroughRequest,
-    BackfillRequest,
+    BackfillRequest, SaveScanResult,
     ReligionResponse, ReligionSnapshotResponse,
     WarResponse, WarSnapshotResponse, WarParticipantResponse,
     LocationResponse, LocationSnapshotResponse,
     ProvinceResponse, ProvinceSnapshotResponse,
-    PopSnapshotResponse, PopAggregateResponse,
+    PopSnapshotResponse, PopAggregateResponse, PopCountryOwnerResponse,
+    CountryResponse,
 )
 from backend.config import SessionConfig
 from backend.parser.eu5.field_catalog import FIELD_CATALOG, get_default_fields
@@ -609,18 +610,78 @@ async def get_pop_snapshots(
 async def get_pop_aggregates(
     playthrough_id: str,
     group_by: str = Query("type", description="Group by: type, culture_id, religion_id, status, location_id, estate"),
-    snapshot_id: int | None = Query(None, description="Filter by snapshot ID"),
-    owner_id: int | None = Query(None, description="Filter by owning country ID (joins via location_snapshots)"),
+    from_date: str | None = Query(None, description="Start game date e.g. '1444.11.11'"),
+    to_date: str | None = Query(None, description="End game date (defaults to from_date for point-in-time)"),
+    owner_tags: list[str] | None = Query(None, description="Country TAGs to filter by (repeat param for multiple, e.g. SWI+BRN for Switzerland incl. predecessor)"),
 ) -> list[PopAggregateResponse]:
-    """Aggregated pop demographics (SUM size, AVG satisfaction/literacy) grouped by a dimension."""
+    """Aggregated pop demographics (SUM size, AVG satisfaction/literacy) grouped by a dimension.
+
+    Date range: from_date..to_date (inclusive). If only from_date is given, returns a single
+    snapshot (point-in-time). If neither is given, returns all snapshots (slow for large DBs).
+
+    owner_tags: pass multiple values to include predecessor countries, e.g.
+        ?owner_tags=SWI&owner_tags=BRN  — returns pops in locations owned by either tag.
+    """
     db = await _get_db()
     rows = await db.get_pop_aggregates(
         playthrough_id,
-        snapshot_id=snapshot_id,
-        owner_id=owner_id,
         group_by=group_by,
+        from_date=from_date,
+        to_date=to_date,
+        owner_tags=owner_tags if owner_tags else None,
     )
     return [PopAggregateResponse(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/countries/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/countries/{playthrough_id}",
+    response_model=list[CountryResponse],
+)
+async def get_countries(playthrough_id: str) -> list[CountryResponse]:
+    """Country reference table for a playthrough.
+
+    Returns all countries (Real + former) with succession data.
+    Use canonical_tag grouping in the UI to collapse predecessor TAGs into
+    one selectable entity (e.g. show 'Switzerland' for both SWI and BRN).
+    """
+    db = await _get_db()
+    rows = await db.get_countries(playthrough_id)
+    result = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("prev_tags"), str):
+            try:
+                d["prev_tags"] = json.loads(d["prev_tags"])
+            except (json.JSONDecodeError, TypeError):
+                d["prev_tags"] = None
+        result.append(CountryResponse(**d))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/pops/{playthrough_id}/country-owners
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/api/pops/{playthrough_id}/country-owners",
+    response_model=list[PopCountryOwnerResponse],
+)
+async def get_pop_country_owners(
+    playthrough_id: str,
+) -> list[PopCountryOwnerResponse]:
+    """Return distinct countries that own locations in this playthrough.
+
+    Used to populate the country picker in the Demographics tab.
+    Returns one entry per country tag, sorted alphabetically, with its latest
+    recorded game date and total owned location count.
+    """
+    db = await _get_db()
+    rows = await db.get_pop_country_owners(playthrough_id)
+    return [PopCountryOwnerResponse(**r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +801,84 @@ async def load_playthrough(req: LoadPlaythroughRequest) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/scan-saves  — discover playthroughs from .eu5 files on disk
+# ---------------------------------------------------------------------------
+
+@router.get("/api/scan-saves", response_model=list[SaveScanResult])
+async def scan_saves(
+    save_directory: str = Query(..., description="Folder to scan for .eu5 files"),
+    game: str = Query("eu5", description="Game type (used to locate rakaly binary)"),
+) -> list[SaveScanResult]:
+    """
+    Scan a save folder and return one entry per distinct playthrough_id found.
+    Uses cheap metadata-only extraction (rakaly melt, reads ~20 lines per file).
+    """
+    from backend.parser.eu5.save_metadata import extract_save_metadata
+
+    save_folder = Path(save_directory)
+    if not save_folder.exists():
+        raise HTTPException(400, f"Save directory not found: {save_folder}")
+
+    rakaly_bin = Path("bin/rakaly/rakaly")
+    if not rakaly_bin.exists():
+        raise HTTPException(500, f"rakaly binary not found: {rakaly_bin}")
+
+    # Collect all .eu5 files
+    try:
+        all_files = list(save_folder.glob("*.eu5"))
+    except Exception as e:
+        raise HTTPException(400, f"Cannot list save directory: {e}")
+
+    if not all_files:
+        return []
+
+    # Extract metadata from each file in parallel (thread pool, max 4 concurrent)
+    semaphore = asyncio.Semaphore(4)
+
+    async def _extract(path: Path):
+        async with semaphore:
+            return await asyncio.to_thread(extract_save_metadata, path, rakaly_bin)
+
+    results = await asyncio.gather(*[_extract(f) for f in all_files], return_exceptions=True)
+
+    # Group by playthrough_id, tracking date range
+    groups: dict[str, dict] = {}
+    for meta in results:
+        if not isinstance(meta, dict) or not meta:
+            continue
+        pt_id = meta["playthrough_id"]
+        date = meta.get("date", "")
+        if pt_id not in groups:
+            groups[pt_id] = {
+                "playthrough_id":  pt_id,
+                "country_name":    meta.get("country_name", ""),
+                "playthrough_name": meta.get("playthrough_name", ""),
+                "multiplayer":     meta.get("multiplayer", False),
+                "save_count":      0,
+                "dates":           [],
+            }
+        groups[pt_id]["save_count"] += 1
+        if date:
+            groups[pt_id]["dates"].append(date)
+        # Prefer non-empty country name
+        if not groups[pt_id]["country_name"] and meta.get("country_name"):
+            groups[pt_id]["country_name"] = meta["country_name"]
+
+    # Build response, sort by save_count desc
+    output = []
+    for g in sorted(groups.values(), key=lambda x: x["save_count"], reverse=True):
+        dates = sorted(g.pop("dates"))
+        output.append(SaveScanResult(
+            earliest_date=dates[0] if dates else "",
+            latest_date=dates[-1] if dates else "",
+            **{k: v for k, v in g.items()},
+        ))
+
+    logger.info(f"scan-saves: {len(all_files)} files → {len(output)} playthroughs in {save_folder}")
+    return output
+
+
+# ---------------------------------------------------------------------------
 # POST /api/playthroughs/{playthrough_id}/backfill
 # ---------------------------------------------------------------------------
 
@@ -752,50 +891,57 @@ async def backfill_playthrough(
     Scan save_directory for .eu5 files belonging to playthrough_id and import
     any not already in the database.  Runs as a background asyncio task and
     sends progress updates via WebSocket (type = "backfill_progress").
+
+    Works even when no pipeline is running and the database is empty — opens
+    a dedicated DB connection for the duration of the backfill.
     """
     from backend.watcher.backfill import run_backfill
-
-    db = await _get_db()
 
     save_folder = Path(req.save_directory)
     if not save_folder.exists():
         raise HTTPException(400, f"Save directory not found: {save_folder}")
 
-    # --- Resolve config: prefer running pipeline, fall back to saved config ---
+    # --- Resolve rakaly + loc_dir ---
+    rakaly_bin = Path("bin/rakaly/rakaly")
     if _pipeline and _pipeline.is_running:
-        rakaly_bin = _pipeline.config.rakaly_bin
         loc_dir = _pipeline.config.loc_dir
-        enabled_fields = _pipeline._enabled_fields
     else:
-        rakaly_bin = Path("bin/rakaly/rakaly")
-        # Build loc_dir from provided install path (or saved config)
         install_path_str = req.game_install_path
         if not install_path_str:
             saved_cfg = _load_config(req.game)
             install_path_str = saved_cfg.game_install_path if saved_cfg else ""
-        if install_path_str:
-            loc_dir = Path(install_path_str) / "game" / "main_menu" / "localization" / req.language
-        else:
-            loc_dir = None
+        loc_dir = (
+            Path(install_path_str) / "game" / "main_menu" / "localization" / req.language
+            if install_path_str else None
+        )
 
-        # Use enabled fields from saved config, else defaults
+    # --- Resolve enabled fields ---
+    if _pipeline and _pipeline.is_running:
+        enabled_fields = _pipeline._enabled_fields
+    else:
         saved_cfg = _load_config(req.game)
         if saved_cfg and saved_cfg.enabled_field_keys:
             enabled_fields = [f for f in FIELD_CATALOG if f.key in saved_cfg.enabled_field_keys]
         else:
             enabled_fields = get_default_fields()
 
-    # --- Broadcast helper (called from async task on same event loop) ---
+    # --- Open a dedicated DB for this backfill (always self-contained) ---
+    db_path = Path("data") / f"{req.game}.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    backfill_db = Database(db_path)
+    await backfill_db.open()
+
+    # --- Broadcast helper ---
     async def _broadcast_progress(data: dict) -> None:
         await _broadcast(WsMessage(type="backfill_progress", data=data))
 
-    # --- Launch as background asyncio task ---
+    # --- Background task ---
     async def _run_task() -> None:
         try:
             await run_backfill(
                 playthrough_id=playthrough_id,
                 save_folder=save_folder,
-                db=db,
+                db=backfill_db,
                 rakaly_bin=rakaly_bin,
                 loc_dir=loc_dir,
                 enabled_fields=enabled_fields,
@@ -809,6 +955,8 @@ async def backfill_playthrough(
                 "added": 0, "skipped": 0, "errors": 1,
                 "current_file": "",
             }))
+        finally:
+            await backfill_db.close()
 
     asyncio.create_task(_run_task())
 

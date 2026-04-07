@@ -19,23 +19,59 @@ from backend.parser.save_loader import EU5Save
 logger = logging.getLogger(__name__)
 
 
+# ── Owner Map ────────────────────────────────────────────────────────────
+
+def _build_owner_map(save: EU5Save) -> dict[int, dict]:
+    """Build {location_id: {"owner_id": int, "owner_tag": str}} from countries.
+
+    In EU5, ownership is declared on the country side:
+        countries.database.{country_id}.owned_locations = [loc_id, ...]
+    rather than on the location side, so we invert the relationship here.
+    """
+    owner_map: dict[int, dict] = {}
+    countries_db = save.raw.get("countries", {}).get("database", {})
+    for country_id_str, country_data in countries_db.items():
+        if not isinstance(country_data, dict):
+            continue
+        tag = save.tag_index.get(country_id_str)
+        if not tag:
+            continue
+        owned_locs = country_data.get("owned_locations", [])
+        if not isinstance(owned_locs, list):
+            continue
+        try:
+            country_id = int(country_id_str)
+        except (TypeError, ValueError):
+            continue
+        for loc_id in owned_locs:
+            try:
+                owner_map[int(loc_id)] = {"owner_id": country_id, "owner_tag": tag}
+            except (TypeError, ValueError):
+                continue
+    return owner_map
+
+
 # ── Location Statics ─────────────────────────────────────────────────────
 
 def extract_location_statics(save: EU5Save) -> list[dict]:
-    """Extract static metadata for all locations that have an owner.
+    """Extract static metadata for all owned locations.
 
     Returns one dict per owned location with fields matching the `locations`
-    table schema.  Only locations with an `owner` field are included.
+    table schema.  Only locations present in the owner map are included.
     """
     locs_db = save.raw.get("locations", {}).get("locations", {})
+    owner_map = _build_owner_map(save)
     results: list[dict] = []
 
     for loc_id_str, loc in locs_db.items():
-        if not isinstance(loc, dict) or loc.get("owner") is None:
+        if not isinstance(loc, dict):
+            continue
+        loc_id = int(loc_id_str)
+        if loc_id not in owner_map:
             continue
 
         results.append({
-            "id": int(loc_id_str),
+            "id": loc_id,
             "province_id": loc.get("province"),
             "raw_material": loc.get("raw_material"),
             "is_port": bool(loc.get("port")),
@@ -51,15 +87,20 @@ def extract_location_snapshot_rows(save: EU5Save) -> list[dict]:
     """Extract per-owned-location snapshot data.
 
     Returns one dict per owned location.  ~13k rows for a mid-game save.
+    Ownership is resolved from the country-side owned_locations list.
     """
     locs_db = save.raw.get("locations", {}).get("locations", {})
+    owner_map = _build_owner_map(save)
     results: list[dict] = []
 
     for loc_id_str, loc in locs_db.items():
-        if not isinstance(loc, dict) or loc.get("owner") is None:
+        if not isinstance(loc, dict):
             continue
 
         loc_id = int(loc_id_str)
+        owner_info = owner_map.get(loc_id)
+        if owner_info is None:
+            continue
 
         # Integration data (list with one entry)
         integration_data = loc.get("integration_data")
@@ -75,10 +116,14 @@ def extract_location_snapshot_rows(save: EU5Save) -> list[dict]:
         if not isinstance(counters, dict):
             counters = {}
 
+        owner_id = owner_info["owner_id"]
+        owner_tag = owner_info["owner_tag"]
+
         results.append({
             "location_id": loc_id,
             # Ownership & Control
-            "owner_id": loc.get("owner"),
+            "owner_id": owner_id,
+            "owner_tag": owner_tag,
             "controller_id": loc.get("controller"),
             "previous_owner_id": loc.get("previous_owner"),
             "last_owner_change": loc.get("last_owner_change"),
@@ -188,17 +233,26 @@ def detect_location_events(
 
     Returns (event_dicts, new_state).  event_dicts are ready for insert_events.
     On first call (prev_state=None), builds state without emitting events.
+    Ownership is resolved from the country-side owned_locations list.
     """
     locs_db = save.raw.get("locations", {}).get("locations", {})
+    owner_map = _build_owner_map(save)
     game_date = save.game_date
     events: list[dict] = []
     new_state: dict[int, dict] = {}
 
-    for loc_id_str, loc in locs_db.items():
-        if not isinstance(loc, dict) or loc.get("owner") is None:
-            continue
+    # Check all locations that are currently owned OR were previously owned
+    all_loc_ids: set[int] = set(owner_map.keys())
+    if prev_state:
+        all_loc_ids |= set(prev_state.keys())
 
-        loc_id = int(loc_id_str)
+    for loc_id in all_loc_ids:
+        loc = locs_db.get(str(loc_id))
+        if not isinstance(loc, dict):
+            loc = {}
+
+        owner_info = owner_map.get(loc_id)
+        owner_id = owner_info["owner_id"] if owner_info else None
 
         integration_data = loc.get("integration_data")
         integration_type = None
@@ -211,7 +265,7 @@ def detect_location_events(
         cores_set = frozenset(cores) if isinstance(cores, list) else frozenset()
 
         cur = {
-            "owner_id": loc.get("owner"),
+            "owner_id": owner_id,
             "controller_id": loc.get("controller"),
             "culture_id": loc.get("culture"),
             "religion_id": loc.get("religion"),
@@ -220,7 +274,8 @@ def detect_location_events(
             "slave_raid_date": loc.get("slave"),
             "cores": cores_set,
         }
-        new_state[loc_id] = cur
+        if owner_id is not None:
+            new_state[loc_id] = cur
 
         if prev_state is None:
             continue
@@ -229,11 +284,12 @@ def detect_location_events(
 
         # New location (first ownership)
         if prev is None:
-            events.append({
-                "game_date": game_date,
-                "event_type": "location_first_owned",
-                "payload": {"location_id": loc_id, "owner_id": cur["owner_id"]},
-            })
+            if owner_id is not None:
+                events.append({
+                    "game_date": game_date,
+                    "event_type": "location_first_owned",
+                    "payload": {"location_id": loc_id, "owner_id": owner_id},
+                })
             continue
 
         # Ownership change

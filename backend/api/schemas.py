@@ -53,6 +53,17 @@ class BackfillRequest(BaseModel):
     game: str = "eu5"                  # Which game DB to write into
 
 
+class SaveScanResult(BaseModel):
+    """One discovered playthrough from GET /api/scan-saves."""
+    playthrough_id: str
+    country_name: str
+    playthrough_name: str
+    save_count: int
+    earliest_date: str               # EU5 date string of the oldest save found
+    latest_date: str                 # EU5 date string of the newest save found
+    multiplayer: bool
+
+
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
@@ -297,6 +308,23 @@ class PopAggregateResponse(BaseModel):
     status: str | None = None
     location_id: int | None = None
     estate: str | None = None
+
+
+class PopCountryOwnerResponse(BaseModel):
+    """One entry per country that owns at least one location in the playthrough."""
+    owner_tag: str
+    latest_game_date: str
+    location_count: int
+
+
+class CountryResponse(BaseModel):
+    """Country reference row — stable per playthrough, supports succession chains."""
+    playthrough_id: str
+    country_id: int
+    tag: str
+    name: str | None = None
+    prev_tags: list[str] | None = None   # predecessor TAGs (e.g. ["BRN"] for SWI)
+    canonical_tag: str                   # terminal successor tag (self if no successor)
 
 
 # ---------------------------------------------------------------------------
