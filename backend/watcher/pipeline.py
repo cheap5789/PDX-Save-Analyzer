@@ -31,6 +31,8 @@ from backend.parser.eu5.snapshot import extract_snapshot
 from backend.parser.eu5.summary import extract_summary, GameSummary
 from backend.parser.eu5.events import diff_summaries, GameEvent
 from backend.parser.eu5.religions import extract_religion_statics, extract_religion_snapshot_rows
+from backend.parser.eu5.cultures import extract_culture_statics
+from backend.parser.eu5.countries import extract_country_rows
 from backend.parser.eu5.wars import (
     extract_war_statics, extract_war_snapshot_rows,
     extract_all_war_participants, detect_battle_events,
@@ -49,6 +51,7 @@ from backend.parser.eu5.geography import (
     extract_province_statics, extract_province_snapshot_rows,
     detect_location_events,
 )
+from backend.parser.eu5.geography_index import GeographyIndex
 from backend.parser.eu5.demographics import extract_pop_snapshot_rows
 from backend.parser.eu5.game_date import should_snapshot
 from backend.storage.database import Database
@@ -102,6 +105,7 @@ class WatcherPipeline:
         self._last_location_state: dict[int, dict] | None = None  # {loc_id: {fields}}
         # Military / war extended state
         self._unit_type_catalog: dict = {}  # loaded once from game install path
+        self._geo_index: GeographyIndex | None = None  # loaded once from game install path
         # Separate battle state for the battles table (only advances at snapshot time)
         self._prev_snapshot_battle_state: dict[str, dict] = {}  # {war_id: {date, location}}
 
@@ -121,11 +125,24 @@ class WatcherPipeline:
         await self._db.open()
 
         # Load unit type catalog (parsed once from game install path)
+        self._unit_type_catalog = load_unit_type_catalog(self.config.game_install_path)
+        if not self._unit_type_catalog:
+            logger.error(
+                "Unit type catalog is empty — military regiment data will NOT be "
+                "collected this session. Check that game_install_path points to the "
+                "EU5 install directory and that common/unit_types/ (or similar) exists."
+            )
+
+        # Load geographic hierarchy index (parsed once from game install path)
         try:
-            self._unit_type_catalog = load_unit_type_catalog(self.config.game_install_path)
-        except Exception:
-            logger.warning("Failed to load unit type catalog — regiment extraction disabled", exc_info=True)
-            self._unit_type_catalog = {}
+            self._geo_index = GeographyIndex.load(self.config.game_install_path)
+        except FileNotFoundError as exc:
+            logger.warning(
+                "Geography index not loaded (%s). Locations will be saved without "
+                "area/region/sub_continent/continent fields this session.",
+                exc,
+            )
+            self._geo_index = None
 
         # Resolve enabled fields
         if self.config.enabled_field_keys:
@@ -403,7 +420,7 @@ class WatcherPipeline:
 
         # Step 8: Geography entity tracking (locations + provinces)
         try:
-            loc_statics = extract_location_statics(save)
+            loc_statics = extract_location_statics(save, geo_index=self._geo_index)
             loc_static_count = await self._db.bulk_upsert_locations(pt_id, loc_statics)
 
             loc_rows = extract_location_snapshot_rows(save)
@@ -438,6 +455,16 @@ class WatcherPipeline:
         except Exception:
             logger.exception("Error in demographics extraction")
 
+        # Step 10: Country + culture reference tables (needed for UI filters)
+        try:
+            country_rows = extract_country_rows(save)
+            await self._db.bulk_upsert_countries(pt_id, country_rows)
+            culture_rows = extract_culture_statics(save)
+            await self._db.bulk_upsert_cultures(pt_id, culture_rows)
+            logger.info(f"  Countries: {len(country_rows)} upserted, cultures: {len(culture_rows)} upserted")
+        except Exception:
+            logger.exception("Error in country/culture extraction")
+
     # ------------------------------------------------------------------
     # Playthrough management
     # ------------------------------------------------------------------
@@ -458,12 +485,17 @@ class WatcherPipeline:
                     "event_type": "playthrough_switch",
                     "payload": {"from_id": old_id, "to_id": pt_id},
                 }])
-                if self._on_playthrough_switch:
-                    self._on_playthrough_switch(old_id, pt_id)
+            else:
+                logger.info(f"  Playthrough detected: {pt_id[:8]}...")
 
             self._current_playthrough_id = pt_id
             # Reset summary state for new playthrough
             self._last_summary = None
+
+            # Notify on both first detection and subsequent switches so
+            # WS clients receive an updated status with playthrough_id set.
+            if self._on_playthrough_switch:
+                self._on_playthrough_switch(old_id, pt_id)
 
         # Upsert playthrough record
         field_keys = [f.key for f in self._enabled_fields]

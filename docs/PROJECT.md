@@ -77,7 +77,8 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 **Commit format:** `feat(eu5): ...` / `fix(watcher): ...` / `docs: ...` / `toolbox: ...`
 
 ### [2026-04-04] Snapshot fields are configurable per campaign (curated catalog + toggle)
-**Decision:** The app ships with a curated catalog of ~44 known EU5 numeric fields (treasury, manpower, stability, scores, etc.) with JSON paths, types, categories, and default on/off. The user toggles fields via checkboxes in the UI. Only enabled fields are recorded in snapshot rows.
+**Decision:** The app ships with a curated catalog of EU5 numeric fields (treasury, manpower, stability, scores, etc.) with JSON paths, types, categories, and default on/off. The user toggles fields via checkboxes in the UI. Only enabled fields are recorded in snapshot rows.
+**Status:** ~44 fields at the original 2026-04-04 decision; **121 `FieldDef` entries as of 2026-04-07** (covers economy, military, government, ruler/heir, all 16 societal values, score, counters, religion-specific currencies, demographics, technology counters).
 **Rationale:** Balances flexibility (user controls DB size) with simplicity (no manual JSON path entry). The catalog is easily extendable as we discover more fields.
 **Detail:** See `backend/parser/eu5/field_catalog.py` for the full registry.
 
@@ -200,9 +201,10 @@ A live watcher and analyzer for Paradox games. The tool watches the save games d
 - [x] Does `rakaly CLI json` correctly decode EU5 `.eu5` binary saves? **Yes.** rakaly v0.8.14 outputs clean JSON. Confirmed 2026-04-03.
 - [x] Where are EU5 base game config files located? **`<install>/game/`** for common/events/setup. **`<install>/game/main_menu/localization/`** for localisation. Confirmed 2026-04-04.
 - [x] How do numeric IDs (culture, religion) in the save map to string keys? **The save is self-referential.** `culture_manager.database[id]` and `religion_manager.database[id]` within the save itself provide the int→string mapping. Localisation files are only needed for display names. Confirmed 2026-04-03.
+- [x] Which EU5 `currency_data` fields correspond to which game mechanics (`karma`, `purity`, `righteousness`)? **Religion-specific.** `karma` = bon/mahayana/theravada/sammitiya/tibetan_buddhism; `purity` = shinto; `righteousness` = sanjiao. Present in the save for every country; only displayed when relevant to the country's religion. Resolved 2026-04-04 — see `docs/games/eu5/save-schema.md` (Economy currency_data section).
+- [x] What is the stability scale in EU5? **−100 to +100.** Confirmed via `common/auto_modifiers/country.txt` (three modifiers: `stability_impact`, `positive_stability_impact`, `negative_stability_impact`). Resolved 2026-04-04 — see `save-schema.md`.
+- [x] What are all the detectable events we can diff between saves? **Mapped and implemented.** `backend/parser/eu5/events.py` diffs: age transitions, situations (started/ended/changed), country appeared/annexed, ruler changed, culture/religion changed, great-power rank changed, capital moved, war started/ended. Pipeline also runs `detect_battle_events` and `detect_location_events`. Remaining event surfaces (war participant join/leave/decline, geography in backfill, laws/reforms/privileges) are tracked in `save-schema.md` Consolidated Active Backlog. Resolved 2026-04-07.
 
 ## Open Questions
 
-- [ ] Which EU5 `currency_data` fields correspond to which game mechanics? (e.g. `karma`, `purity`, `righteousness` — religion-specific?) Needs `common/defines/` or game documentation.
-- [ ] What is the stability scale in EU5? (Observed value: 23.09 — is this 0–100? Different from EU4's -3 to +3?)
-- [ ] What are all the detectable events we can diff between saves? (Ruler death, war start/end, crisis — need to map which save keys change.)
+*All resolved as of 2026-04-07 — see Resolved Questions above. Active work items live in `docs/games/eu5/save-schema.md` Consolidated Active Backlog.*

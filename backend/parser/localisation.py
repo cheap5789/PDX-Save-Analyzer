@@ -196,6 +196,112 @@ def display_name(loc: dict[str, str], key: str, fallback: str | None = None) -> 
     return fallback if fallback is not None else key
 
 
+# ---------------------------------------------------------------------------
+# Geographic localisation loaders
+# ---------------------------------------------------------------------------
+#
+# Geographic slugs (continent / sub_continent / region / area /
+# province_definition / location) are scattered across a handful of
+# files in the localization tree.  We expose a small loader that returns
+# one dict per level so the rest of the codebase doesn't have to know
+# the file layout.
+#
+#   continent / sub_continent / region   →  region_names_l_english.yml
+#   area                                 →  area_l_english.yml
+#   province_definition                  →  province_names_l_english.yml
+#   location (canonical)                 →  location_names/location_names_l_english.yml
+#
+# Per-culture location overrides
+# (location_names/location_names_<culture_group>_l_english.yml) are
+# deferred to a later phase per agreement on 2026-04-07 and are NOT
+# loaded here.
+
+_GEO_FILE_REGION   = "region_names_l_english.yml"
+_GEO_FILE_AREA     = "area_l_english.yml"
+_GEO_FILE_PROVINCE = "province_names_l_english.yml"
+_GEO_FILE_LOCATION = ("location_names", "location_names_l_english.yml")
+
+
+def _candidate_loc_roots(loc_dir: Path) -> list[Path]:
+    """Return possible roots that contain the per-domain .yml files.
+
+    The watcher passes the language root (``.../localization/english``).
+    Some installs nest the relevant files one level deeper inside
+    ``main_menu/``; we accept both.
+    """
+    return [loc_dir, loc_dir / "main_menu"]
+
+
+def _read_yml_into(path: Path, out: dict[str, str]) -> int:
+    """Read a single yml file into ``out``.  Returns the number of
+    keys added.  Silently returns 0 if the file does not exist."""
+    if not path.exists():
+        return 0
+    before = len(out)
+    _parse_yml(path, out)
+    return len(out) - before
+
+
+def load_geo_localisation(loc_dir: str | Path) -> dict[str, dict[str, str]]:
+    """Return ``{level → {slug → display_name}}`` for the geographic
+    levels we localise.
+
+    Levels::
+
+        "region_or_continent"   – region_names_l_english.yml (mixes
+                                  continent / sub_continent / region)
+        "area"                  – area_l_english.yml
+        "province"              – province_names_l_english.yml
+        "location"              – location_names/location_names_l_english.yml
+
+    On 2026-04-07 we confirmed slugs do NOT collide between continent /
+    sub_continent / region in vanilla EU5, so a single dict for those
+    three levels is safe.
+    """
+    loc_dir = Path(loc_dir)
+    result: dict[str, dict[str, str]] = {
+        "region_or_continent": {},
+        "area":                {},
+        "province":            {},
+        "location":            {},
+    }
+
+    roots = _candidate_loc_roots(loc_dir)
+
+    def _try(filename, target_key):
+        for root in roots:
+            n = _read_yml_into(root / filename, result[target_key])
+            if n:
+                return n
+        return 0
+
+    def _try_nested(parts, target_key):
+        for root in roots:
+            n = _read_yml_into(root.joinpath(*parts), result[target_key])
+            if n:
+                return n
+        return 0
+
+    _try(_GEO_FILE_REGION,   "region_or_continent")
+    _try(_GEO_FILE_AREA,     "area")
+    _try(_GEO_FILE_PROVINCE, "province")
+    _try_nested(_GEO_FILE_LOCATION, "location")
+
+    return result
+
+
+def fmt_geo(geo_loc: dict[str, dict[str, str]], slug: str | None) -> str:
+    """Look up a geographic slug across all levels.  Returns the slug
+    itself if no display name is found, or ``""`` for ``None``."""
+    if not slug:
+        return ""
+    for level in ("location", "province", "area", "region_or_continent"):
+        v = geo_loc.get(level, {}).get(slug)
+        if v:
+            return v
+    return slug
+
+
 if __name__ == "__main__":
     import sys
     loc_path = sys.argv[1] if len(sys.argv) > 1 else "game-data/eu5/localization/english"

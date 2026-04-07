@@ -15,8 +15,45 @@ import logging
 from typing import Any
 
 from backend.parser.save_loader import EU5Save
+from backend.parser.eu5.geography_index import GeographyIndex
 
 logger = logging.getLogger(__name__)
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────
+
+def _build_location_slug_index(save: EU5Save) -> dict[int, str]:
+    """Return ``{location_id: slug}`` from ``metadata.compatibility.locations``.
+
+    The save stores all known location slugs as a flat array; the
+    location_id (1-based, matching ``locations.locations`` keys) is
+    ``index + 1``.  Verified against autosave.eu5 on 2026-04-07: 28 573
+    slugs, id 1 → 'stockholm', id 2 → 'norrtalje'.
+    """
+    slugs = (
+        save.raw.get("metadata", {})
+        .get("compatibility", {})
+        .get("locations", [])
+    )
+    if not isinstance(slugs, list):
+        return {}
+    return {i + 1: s for i, s in enumerate(slugs) if isinstance(s, str)}
+
+
+def _build_province_def_index(save: EU5Save) -> dict[int, str]:
+    """Return ``{province_id: province_definition_slug}``."""
+    db = save.raw.get("provinces", {}).get("database", {})
+    out: dict[int, str] = {}
+    for pid_str, pdata in db.items():
+        if not isinstance(pdata, dict):
+            continue
+        pdef = pdata.get("province_definition")
+        if isinstance(pdef, str):
+            try:
+                out[int(pid_str)] = pdef
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 # ── Owner Map ────────────────────────────────────────────────────────────
@@ -53,14 +90,25 @@ def _build_owner_map(save: EU5Save) -> dict[int, dict]:
 
 # ── Location Statics ─────────────────────────────────────────────────────
 
-def extract_location_statics(save: EU5Save) -> list[dict]:
+def extract_location_statics(
+    save: EU5Save,
+    geo_index: GeographyIndex | None = None,
+) -> list[dict]:
     """Extract static metadata for all owned locations.
 
     Returns one dict per owned location with fields matching the `locations`
     table schema.  Only locations present in the owner map are included.
+
+    When ``geo_index`` is provided, each row is enriched with the
+    canonical slug (resolved from the save's
+    ``metadata.compatibility.locations`` array) and the full geographic
+    chain (province_def → area → region → sub_continent → continent),
+    looked up via the location's ``province`` int → province_definition.
     """
     locs_db = save.raw.get("locations", {}).get("locations", {})
     owner_map = _build_owner_map(save)
+    slug_index = _build_location_slug_index(save)
+    prov_def_index = _build_province_def_index(save)
     results: list[dict] = []
 
     for loc_id_str, loc in locs_db.items():
@@ -70,12 +118,30 @@ def extract_location_statics(save: EU5Save) -> list[dict]:
         if loc_id not in owner_map:
             continue
 
+        province_id = loc.get("province")
+        province_def = prov_def_index.get(province_id) if province_id is not None else None
+        chain: dict[str, str | None] = {
+            "area": None, "region": None, "sub_continent": None, "continent": None,
+        }
+        if geo_index is not None and province_def:
+            ch = geo_index.chain_for_province(province_def)
+            chain["area"]          = ch["area"]
+            chain["region"]        = ch["region"]
+            chain["sub_continent"] = ch["sub_continent"]
+            chain["continent"]     = ch["continent"]
+
         results.append({
             "id": loc_id,
-            "province_id": loc.get("province"),
+            "slug": slug_index.get(loc_id),
+            "province_id": province_id,
             "raw_material": loc.get("raw_material"),
             "is_port": bool(loc.get("port")),
             "holy_sites": loc.get("holy_sites"),  # list[int] or None
+            "province_def":  province_def,
+            "area":          chain["area"],
+            "region":        chain["region"],
+            "sub_continent": chain["sub_continent"],
+            "continent":     chain["continent"],
         })
 
     return results

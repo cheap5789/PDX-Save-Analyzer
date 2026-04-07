@@ -37,6 +37,7 @@ from backend.parser.eu5.geography import (
     extract_location_statics, extract_location_snapshot_rows,
     extract_province_statics, extract_province_snapshot_rows,
 )
+from backend.parser.eu5.geography_index import GeographyIndex
 from backend.parser.eu5.demographics import extract_pop_snapshot_rows
 from backend.parser.eu5.countries import extract_country_rows
 from backend.storage.database import Database
@@ -111,11 +112,29 @@ async def run_backfill(
 
     # Load unit type catalog once (needed for regiment extraction)
     unit_type_catalog: dict = {}
+    geo_index: GeographyIndex | None = None
     if game_install_path and Path(game_install_path).exists():
+        unit_type_catalog = load_unit_type_catalog(game_install_path)
+        if not unit_type_catalog:
+            logger.error(
+                "Backfill: unit type catalog is empty — military regiment data will "
+                "NOT be collected. Check that game_install_path points to the EU5 "
+                "install directory and that common/unit_types/ (or similar) exists."
+            )
+        # Load geographic hierarchy index from same install path
         try:
-            unit_type_catalog = load_unit_type_catalog(game_install_path)
-        except Exception:
-            logger.warning("Backfill: failed to load unit type catalog", exc_info=True)
+            geo_index = GeographyIndex.load(game_install_path)
+        except FileNotFoundError as exc:
+            logger.warning(
+                "Backfill: geography index not loaded (%s). Locations will be "
+                "saved without area/region/sub_continent/continent fields.",
+                exc,
+            )
+    else:
+        logger.warning(
+            "Backfill: game_install_path not provided or not found — "
+            "military and geography extraction will be skipped."
+        )
 
     # Track most recent battle per war to detect newly-recorded battles
     prev_battle_states: dict[str, dict] = {}
@@ -268,7 +287,7 @@ async def run_backfill(
 
         # --- Geography ---
         try:
-            loc_statics = extract_location_statics(save)
+            loc_statics = extract_location_statics(save, geo_index=geo_index)
             await db.bulk_upsert_locations(pt_id, loc_statics)
             loc_rows = extract_location_snapshot_rows(save)
             await db.insert_location_snapshots(pt_id, snap_id, save.game_date, loc_rows)

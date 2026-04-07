@@ -126,6 +126,10 @@ export function useApi() {
     /** GET /api/cultures/:id — static culture records */
     getCultures: (playthroughId) => get(`/api/cultures/${playthroughId}`),
 
+    // ── Geography ───────────────────────────────────────────────
+    /** GET /api/geography/:id — display names for all geo slugs in a playthrough */
+    getGeography: (playthroughId) => get(`/api/geography/${playthroughId}`),
+
     /** GET /api/religions/:id/snapshots?religion_id= */
     getReligionSnapshots: (playthroughId, { religion_id } = {}) => {
       const params = new URLSearchParams()

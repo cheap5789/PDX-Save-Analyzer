@@ -28,6 +28,8 @@ The Toolbox is a set of standalone scripts used to empirically understand Parado
 
 ## Core: `save_loader.py`
 
+> **Module location note (2026-04-04):** `save_loader.py` and `localisation.py` were promoted from `toolbox/` to `backend/parser/` so the watcher and API can import them without a circular dependency. `toolbox/save_loader.py` and `toolbox/localisation.py` remain as **thin re-export wrappers** so the toolbox CLI commands and notebooks continue to work unchanged. All real logic lives in `backend/parser/save_loader.py` and `backend/parser/localisation.py`.
+
 All other scripts depend on `save_loader.load_save()`. It returns an `EU5Save` dataclass with:
 
 - `raw` — full rakaly JSON output

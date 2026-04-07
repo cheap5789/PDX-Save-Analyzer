@@ -1070,10 +1070,18 @@ These fields are set at world generation and change rarely if ever. Written when
 | Field | JSON path | Sample | Notes |
 |-------|-----------|--------|-------|
 | Location ID | key in `locations.locations` | `1977` | Stable numeric string. |
+| Slug | `metadata.compatibility.locations[id-1]` | `"stockholm"` | Canonical string slug. The save embeds the full ordered list of location slugs in `metadata.compatibility.locations` (length matches `len(locations.locations)`); the array index +1 is the location ID. **Verified 2026-04-07.** Used as the primary join key against `map_data/definitions.txt` and the `location_names` localisation files. |
 | Province ID | `locations.locations[id].province` | `0` | Integer reference to `provinces.database`. Absent for sea/terra incognita tiles. |
 | Raw material | `locations.locations[id].raw_material` | `"clay"` | 52 types observed: clay, lumber, livestock, wild_game, fish, wheat, fur, legumes, fruit, millet, wool, fiber_crops, rice, cotton, stone, and ~37 more. Changes very rarely (possibly never). |
 | Port | `locations.locations[id].port` | `[67109039]` | Present only on coastal locations with a port. Value is a list of ship IDs currently in port. Store as boolean `is_port`. 79 port locations observed. |
 | Holy sites | `locations.locations[id].holy_sites` | `[9]` | List of religion IDs for which this location is a holy site. Written once. |
+| Province def | (resolved) `provinces.database[loc.province].province_definition` | `"uppland_province"` | String slug for the location's province (one level above location in the hierarchy). Looked up via the location → province int link, then the province → province_definition string. |
+| Area | (resolved) from `definitions.txt` | `"svealand_area"` | One level above province. Resolved at extraction time via `GeographyIndex.chain_for_province()`. |
+| Region | (resolved) from `definitions.txt` | `"scandinavian_region"` | One level above area. |
+| Sub-continent | (resolved) from `definitions.txt` | `"western_europe"` | One level above region. |
+| Continent | (resolved) from `definitions.txt` | `"europe"` | Top of the hierarchy. 9 distinct values (5 land, 4 ocean). |
+
+> **Geographic hierarchy source.** The five upper levels (province → area → region → sub_continent → continent) are parsed once per session from `<game_install>/game/map_data/definitions.txt` by `backend/parser/eu5/geography_index.py`. The file is a flat tree with tab-indented `name = { ... }` blocks; the leaf province blocks contain bare location-slug tokens. The save itself supplies the location → province int link (and the province → province_definition slug), so `definitions.txt` is needed only for the area-and-above levels. Per project rule #5, this file is read from the user's game install path at runtime and never shipped.
 
 ---
 
@@ -1368,3 +1376,79 @@ Items below still require game-file lookup or further investigation:
 - [x] ~~`current_research.progress` threshold for completion~~ → **Dropped.** Threshold is variable per advance, not a fixed constant. Don't track completion — just track current progress value and detect research change when the active advance key switches between snapshots.
 - [ ] Unit type max strength lookup (needs `common/unit_types/` game files) — **Deferred to follow-up project.**
 - [ ] Advance classification by domain (needs `common/advances/` game files) — **Deferred to follow-up project.**
+
+---
+
+## Consolidated Active Backlog (as of 2026-04-07)
+
+> This section is the single source of truth for what is *still* open. The per-section backlogs above are preserved as the historical audit record from the field-by-field review; many of their `[NEW]` / `NOT TRACKED` items have since been implemented and are no longer listed here. Cross-checked on 2026-04-07 against `backend/parser/eu5/field_catalog.py` (121 `FieldDef` entries), `backend/parser/eu5/{events,wars,geography,demographics,religions,countries,military}.py`, `backend/watcher/{pipeline,backfill}.py`, `backend/storage/database.py`, and `frontend/src/components/tabs/`.
+>
+> Items marked **[BUG]** are incorrect behaviour. **[NEW]** = additive feature. **[PARTIAL]** = code in place but not wired everywhere. **[FUTURE]** = explicitly deferred and dependent on parsing game files.
+
+### Identity & Metadata
+
+- **[NEW] Capital display.** Capital is stored as raw `int` location ID on the country snapshot. As of 2026-04-07 the resolution chain exists end-to-end (`metadata.compatibility.locations[id-1]` → slug → `fmtLocation(slug)`), so the only remaining work is to call `fmtLocation` on the capital field in the country/identity views. No backend change needed.
+- **[NEW] Culture status tracking.** `accepted_cultures` and `tolerated_cultures` (lists of culture IDs) are not stored. Discriminated = present in country pops but in none of {primary, accepted, tolerated}. Add to country snapshot; derive discriminated set at query time from `pop_snapshots`.
+- **[NEW] Country color.** Extract `color.rgb` from country object and store as `[r,g,b]` JSON. Used in frontend to colour chart lines/legend per country (matching the in-game map colour). Religion entity already stores `color_rgb`; mirror that pattern for countries.
+- **[BUG] Entity type filtering.** Extraction currently filters on `country_type == "Real"` but ignores the `type` field. Non-`location` entities (`building`, `pop`, `army`, `navy`) pass the filter and get full extraction even though most fields are meaningless for them. Fix: branch on `type` — only `location` gets full extraction; the rest store minimal fields (population, gold) and are excluded from event diffs and most analyses.
+- **[LOW] Court / liturgical language.** `court_language`, `liturgical_language`. Localise via `cultural_and_languages_l_<lang>.yml`. Low priority — only relevant for language-shift event tracking.
+
+### Economy
+
+- **[CHECK] War exhaustion stock.** Currently only the monthly delta (`war_exhaustion_monthly`) is in the catalog. The stock value `currency_data.war_exhaustion` is only present on countries currently at war. Decide whether to add it.
+- **[NEW] Diplomatic maintenance slider.** `economy.maintenances.DiplomaticMaintenance`. Other maintenance sliders are already tracked; this one is missing. Add to catalog.
+- **[FEATURE] Cumulative P&L.** No cumulative income/expense in the save — only current month + 12-month rolling. Reconstruction approach: sum `economy.income`/`economy.expense` across snapshots per country for an approximate lifetime P&L chart. Pure derivation; no schema change needed.
+- **[FEATURE] Fixed vs variable cost analysis.** Maintenance sliders represent player decisions; correlate slider values with expense line items across snapshots in the frontend to expose the fixed/variable split. Frontend-only.
+- **[KNOWN GAP] Missing economy line items.** food sold (income), food bought / interest on loans / building subsidies / court cost (expense) have no per-line storage in the save — `economy.income` and `economy.expense` are aggregate floats only. Documented as unrecoverable; rely on totals.
+
+### Technology
+
+- **[NEW] Researched advance set.** Store `researched_advances` dict keys as a JSON list per country snapshot. Enables per-snapshot diffing → "advance researched" events. Category `technology`.
+- **[NEW] Current research tracking.** Store `current_research.research[-1]` (active advance, resolved via `advance_manager.database[id].t`), `current_research.progress`, and the queue (`research[:-1]`). Detect "research changed" events from active-advance switches.
+- **[FUTURE] Advance classification by domain.** Parse `common/advances/` to classify each advance (scientific / social / military / economic / national …). One-shot at startup or per game version. Lookup table consumed by the frontend to render grouped advance trees.
+- **[INVESTIGATE] `counters.Anything`.** Suspected total fired-event count per country. Cross-reference with `event_manager` to confirm before deciding whether to track or skip.
+
+### Military
+
+- **[FUTURE] Subunit deployed manpower.** Accurate troop count needs `strength` × unit-type max strength from `common/unit_types/`. Build `{unit_type_key: max_strength}` lookup at startup; sum `strength × max` across all subunits per country. Replaces `expected_army_size` as the authoritative figure.
+- **[FUTURE] Army composition breakdown.** Once unit types are parsed, group subunits by category (infantry / cavalry / artillery / naval) per snapshot. Enables tracking the feudal-levy → professional-army transition.
+
+### Government
+
+- **[NEW] Country rank history list.** Integer `level` is in the catalog (`level`), but the `country_rank_history` list of rank milestone strings is not yet persisted. Needed to surface "France became a Kingdom"-style milestone events.
+- **[NEW] Ruler & heir birth date.** `ruler_adm/dip/mil/name` and `heir_adm/dip/mil/name` are stored, but `birth_date` is not — required to derive ruler age and to surface "heir comes of age" events.
+- **[FUTURE] Implemented laws / reforms / privileges diff.** Diff `government.implemented_laws`, `implemented_reforms`, and `implemented_privileges` between snapshots → "law adopted" / "reform enacted" / "privilege granted" events. Same diff mechanic as the planned advance-set diff.
+
+### Religion & Diplomacy
+
+- **[NEW] Religion membership join table.** Membership is currently encoded as an integer FK on country/pop snapshot rows. A dedicated `(snapshot_id, religion_id, country_id)` table would make "list all members of religion X at date Y" trivial; currently requires scanning `pop_snapshots`/`location_snapshots`. Decide whether the query gain justifies the extra table.
+- **[NEW] Rivals & enemies — full ID lists.** `rival_count` and `enemy_count` are stored. The original request was *count + IDs*. Decide whether the ID lists are needed; if yes, store as JSON arrays alongside the counts.
+
+### Wars
+
+- **[NEW] War participant events.** `war_started` and `war_ended` are emitted by `events.py::_diff_wars`. Still missing: "country joined war" (new Active participant), "country left war" (status → Left), "country declined" (status = Declined). Wire these into the war-processing path.
+
+### Geography
+
+- **[DONE 2026-04-07] Location localisation & geographic hierarchy.** Locations now resolve to display names everywhere in the UI, and every location carries its full upper-hierarchy chain (province_definition → area → region → sub_continent → continent). Implementation:
+  - `backend/parser/eu5/geography_index.py` — hand-written tokenizer/parser for `<game_install>/game/map_data/definitions.txt`. Loaded once per pipeline/backfill session via `GeographyIndex.load(game_install_path)`. Builds maps `location_to_province`, `province_to_area`, `area_to_region`, `region_to_subcontinent`, `subcontinent_to_continent`. Smoke-tested: 9 continents, 23 sub_continents, 82 regions, 803 areas, 4309 province_definitions, 28573 locations. Per project rule #5, file is read at runtime from the user's install path and never shipped.
+  - `backend/parser/eu5/geography.py::extract_location_statics()` — now reads `metadata.compatibility.locations[id-1]` (self-referential slug array in the save itself) to assign each location its slug, then enriches the row with the full chain via `GeographyIndex.chain_for_location(slug)`. End-to-end tested against autosave.eu5: 14010 owned locations, 100% slug + chain resolution.
+  - `backend/storage/database.py::locations` — added columns `slug`, `province_def`, `area`, `region`, `sub_continent`, `continent` plus indexes on `continent` and `region`. New helper `get_geography_slugs(playthrough_id)` returns the per-level set of distinct slugs in use.
+  - `backend/parser/localisation.py::load_geo_localisation()` — reads the geography YAMLs (`*_l_<lang>.yml`) and returns a `{level → {slug → display_name}}` map. Falls back through the candidate roots (`loc_dir`, `loc_dir/main_menu`).
+  - `GET /api/geography/{playthrough_id}` — returns only the display names actually used by the playthrough (intersected with `get_geography_slugs`), keeping the payload small.
+  - `frontend/src/contexts/GameLocalizationContext.jsx` — new formatters `fmtLocation`, `fmtProvince`, `fmtArea`, `fmtRegion`, `fmtSubContinent`, `fmtContinent`, each with a `_cleanSlug` fallback (strips `_province` / `_area` / `_region` suffixes, capitalises). Provider also exposes the raw `geography` map for advanced consumers.
+- **[FUTURE — lowest priority] Per-culture location-name overrides.** EU5 ships ~62 `location_names_<culture>_l_english.yml` files providing culture-specific renamings (e.g. a Norse-cultured Stockholm reads differently from a Swedish-cultured one). The base `location_names_l_english.yml` only resolves ~8116 of the 28573 location slugs; per-culture files cover most of the rest. Deferred per user direction 2026-04-07. When implemented: load all `location_names_*_l_<lang>.yml` files into a `{culture_id → {slug → name}}` map and switch the location formatter to consult the location's primary culture before the fallback. No schema change required — `culture_id` is already on `location_snapshots`.
+- **[PARTIAL] Geography events in backfill.** `detect_location_events()` in `backend/parser/eu5/geography.py` is wired into `backend/watcher/pipeline.py` (live path) but **not** into `backend/watcher/backfill.py`. Backfill runs will miss first-ownership / ownership change / controller change / core gain/loss / integration upgrade / culture or religion flip / rank upgrade / slave-raid events for historical saves. Decide: wire into backfill (replays events on each historical save) or document backfill as snapshot-only by design.
+- **[PARTIAL] Battle sub-events in backfill.** Same pattern: `detect_battle_events()` is wired into `pipeline.py` but not `backfill.py`. Same decision.
+- **[NEW] Province aggregation in frontend.** TerritoryTab is location-only. Province-level food stock, food delta, and goods produced (already extracted into `province_snapshots`) are not yet shown anywhere.
+
+### Demographics
+
+- **[NEW] Per-location demographics view.** DemographicsTab works at country/aggregate level. A per-location view (pop breakdown by `type × culture × religion`, satisfaction per group, slave pops surfaced separately) is not yet implemented.
+- **[NEW] Slave demographic view.** Slave pops (`type='slaves'`) are stored in `pop_snapshots` and queryable, but no dedicated UI exists. Future view: total slave mass per country over time, breakdown by captured culture/religion, links to slave-raid events on the location side.
+
+### Cross-cutting Decisions Pending
+
+- **Backfill events (Geography & Battles)** — single decision applies to both: do we want backfill to *replay* events on each historical save, or stay snapshot-only? Affects the implementation of every per-save `detect_*` function added in the future.
+
+---

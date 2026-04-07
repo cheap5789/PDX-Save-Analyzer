@@ -17,6 +17,7 @@ Endpoints:
     GET  /api/wars/{id}/participants        War participants with scores/losses
     GET  /api/locations/{id}                Location statics for a playthrough
     GET  /api/locations/{id}/snapshots      Location snapshot data (filterable)
+    GET  /api/geography/{id}                Display names for all geo slugs in a playthrough
     GET  /api/provinces/{id}                Province statics for a playthrough
     GET  /api/provinces/{id}/snapshots      Province food economy over time
     GET  /api/pops/{id}/snapshots           Individual pop data (filtered)
@@ -398,6 +399,80 @@ async def get_cultures(playthrough_id: str) -> list[CultureResponse]:
     db = await _get_db()
     rows = await db.get_cultures(playthrough_id)
     return [CultureResponse(**dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/geography/{playthrough_id}
+# ---------------------------------------------------------------------------
+
+@router.get("/api/geography/{playthrough_id}")
+async def get_geography(playthrough_id: str) -> dict[str, dict[str, str]]:
+    """Return display names for all geographic slugs referenced in this
+    playthrough.
+
+    Response shape::
+
+        {
+          "location":            { "stockholm":         "Stockholm", ... },
+          "province_definition": { "uppland_province":  "Uppland",   ... },
+          "area":                { "svealand_area":     "Svealand",  ... },
+          "region":              { "scandinavian_region": "Scandinavia", ... },
+          "sub_continent":       { "western_europe":    "Western Europe", ... },
+          "continent":           { "europe":            "Europe",    ... }
+        }
+
+    Slugs without a localised display name fall back to the slug itself.
+    Per-culture location overrides are deferred (decision 2026-04-07);
+    only the canonical English name is shipped here.
+    """
+    from backend.parser.localisation import load_geo_localisation, fmt_geo
+
+    db = await _get_db()
+    used = await db.get_geography_slugs(playthrough_id)
+
+    # Resolve loc_dir from active pipeline, then from saved config.
+    loc_dir: Path | None = None
+    if _pipeline and _pipeline.is_running:
+        loc_dir = _pipeline.config.loc_dir
+    else:
+        saved_cfg = _load_config("eu5")
+        if saved_cfg and saved_cfg.game_install_path:
+            loc_dir = (
+                Path(saved_cfg.game_install_path)
+                / "game" / "main_menu" / "localization" / (saved_cfg.language or "english")
+            )
+
+    geo_loc: dict[str, dict[str, str]] = {}
+    if loc_dir and loc_dir.exists():
+        geo_loc = load_geo_localisation(loc_dir)
+
+    out: dict[str, dict[str, str]] = {
+        "location":            {},
+        "province_definition": {},
+        "area":                {},
+        "region":              {},
+        "sub_continent":       {},
+        "continent":           {},
+    }
+    # location dict pulls from "location" loc level only
+    for slug in used.get("location", set()):
+        out["location"][slug] = geo_loc.get("location", {}).get(slug, slug)
+    # province → province dict
+    for slug in used.get("province_definition", set()):
+        out["province_definition"][slug] = geo_loc.get("province", {}).get(slug, slug)
+    # area → area dict
+    for slug in used.get("area", set()):
+        out["area"][slug] = geo_loc.get("area", {}).get(slug, slug)
+    # region/sub_continent/continent share region_or_continent dict
+    region_dict = geo_loc.get("region_or_continent", {})
+    for slug in used.get("region", set()):
+        out["region"][slug] = region_dict.get(slug, slug)
+    for slug in used.get("sub_continent", set()):
+        out["sub_continent"][slug] = region_dict.get(slug, slug)
+    for slug in used.get("continent", set()):
+        out["continent"][slug] = region_dict.get(slug, slug)
+
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -58,18 +58,36 @@ CATEGORY_COLS = {
 
 def load_unit_type_catalog(game_install_path: str | Path) -> dict[str, dict]:
     """
-    Parse all /common/unit_types/*.txt files and return a mapping:
+    Parse unit type definitions from the game install and return a mapping:
         { type_key: { "category": str, "max_strength": float } }
 
-    Called once at backfill/pipeline start. Returns an empty dict on failure
-    so downstream code degrades gracefully (unknown types get category=None).
+    Tries several candidate subdirectories under game_install_path since the
+    exact layout varies between EU5 versions/builds.  Returns an empty dict
+    (not an error) when no directory is found — callers decide whether to
+    treat that as fatal.
     """
-    catalog: dict[str, dict] = {}
-    unit_types_dir = Path(game_install_path) / "game" / "common" / "unit_types"
+    base = Path(game_install_path)
+    # Candidate paths, most-likely first
+    candidates = [
+        base / "game" / "in_game" / "common" / "unit_types",   # EU5 confirmed
+        base / "game" / "common" / "unit_types",
+        base / "common" / "unit_types",
+        base / "game" / "common" / "units",
+        base / "common" / "units",
+    ]
 
-    if not unit_types_dir.exists():
-        logger.warning("unit_types dir not found: %s", unit_types_dir)
-        return catalog
+    unit_types_dir: Path | None = None
+    for c in candidates:
+        if c.exists():
+            unit_types_dir = c
+            break
+
+    if unit_types_dir is None:
+        tried = ", ".join(str(c) for c in candidates)
+        logger.warning("unit_types dir not found (tried: %s)", tried)
+        return {}
+
+    catalog: dict[str, dict] = {}
 
     # Simple regex parser — we don't need a full PDX script parser here.
     # Each unit type block looks like:
@@ -78,12 +96,9 @@ def load_unit_type_catalog(game_install_path: str | Path) -> dict[str, dict]:
     #       max_strength = 1.0
     #       ...
     #   }
-    block_re = re.compile(
-        r'^(\w+)\s*=\s*\{([^}]*)\}',
-        re.MULTILINE | re.DOTALL,
-    )
-    category_re    = re.compile(r'\bcategory\s*=\s*(\w+)')
-    max_str_re     = re.compile(r'\bmax_strength\s*=\s*([0-9.]+)')
+    block_re    = re.compile(r'^(\w+)\s*=\s*\{([^}]*)\}', re.MULTILINE | re.DOTALL)
+    category_re = re.compile(r'\bcategory\s*=\s*(\w+)')
+    max_str_re  = re.compile(r'\bmax_strength\s*=\s*([0-9.]+)')
 
     for txt_file in sorted(unit_types_dir.glob("*.txt")):
         try:
@@ -116,8 +131,9 @@ def extract_country_military(
     """
     Return one dict per country to write into country_military_snapshots.
 
-    Filter: always include active_war_country_ids; skip peaceful countries
-    with score_place > rank_threshold (or no score_place).
+    Filter: always include active_war_country_ids; for peaceful countries,
+    only include those whose score_place is known AND exceeds rank_threshold.
+    Countries with no score_place field are included by default (conservative).
 
     strength values are the raw game values from subunit.strength
     (absent field = max_strength from catalog; if type unknown, defaults to 1.0).
@@ -125,6 +141,11 @@ def extract_country_military(
     countries_db  = save.raw.get("countries", {}).get("database", {})
     subunits_db   = save.raw.get("subunit_manager", {}).get("database", {})
     tags_map      = save.raw.get("countries", {}).get("tags", {})
+
+    n_real = 0
+    n_passed_rank = 0
+    n_with_subunits = 0
+    n_nonzero = 0
 
     results: list[dict[str, Any]] = []
 
@@ -134,12 +155,16 @@ def extract_country_military(
         if cdata.get("country_type") != "Real":
             continue
 
+        n_real += 1
+
         try:
             cid = int(cid_str)
         except ValueError:
             continue
 
-        # Apply rank filter for peaceful countries
+        # Apply rank filter for peaceful countries.
+        # Only skip when score_place is explicitly known to be bad.
+        # If score_place is None (field absent in EU5), include the country.
         if cid not in active_war_country_ids:
             score_obj = cdata.get("score")
             score_place = (
@@ -147,13 +172,18 @@ def extract_country_military(
                 if isinstance(score_obj, dict)
                 else None
             )
-            if score_place is None or score_place > rank_threshold:
+            if score_place is not None and score_place > rank_threshold:
                 continue
+
+        n_passed_rank += 1
 
         # Count subunits by category
         owned_subunit_ids = cdata.get("owned_subunits", [])
         if not isinstance(owned_subunit_ids, list):
-            continue
+            owned_subunit_ids = []
+
+        if owned_subunit_ids:
+            n_with_subunits += 1
 
         # Accumulate per-category: count and total strength
         counts: dict[str, int]   = {c: 0 for c in CATEGORY_COLS}
@@ -180,6 +210,9 @@ def extract_country_military(
         navy_count  = sum(counts[c]     for c in ("navy_galley", "navy_light_ship", "navy_transport", "navy_heavy_ship"))
         navy_str    = sum(strengths[c]  for c in ("navy_galley", "navy_light_ship", "navy_transport", "navy_heavy_ship"))
 
+        if army_count > 0 or navy_count > 0:
+            n_nonzero += 1
+
         # Skip countries with zero forces (nothing to record)
         if army_count == 0 and navy_count == 0:
             continue
@@ -197,6 +230,22 @@ def extract_country_military(
             row[str_col] = round(strengths[cat], 5)
 
         results.append(row)
+
+    logger.info(
+        "extract_country_military: real=%d, passed_rank=%d, with_subunits=%d, "
+        "nonzero_forces=%d, subunit_db_size=%d, result_rows=%d",
+        n_real, n_passed_rank, n_with_subunits, n_nonzero, len(subunits_db), len(results),
+    )
+    if n_passed_rank > 0 and n_with_subunits == 0:
+        logger.warning(
+            "No countries had owned_subunits — 'owned_subunits' field may be "
+            "absent or named differently in this EU5 save version."
+        )
+    if n_passed_rank > 0 and len(subunits_db) == 0:
+        logger.warning(
+            "subunit_manager.database is empty — the unit data path may be wrong. "
+            "Check if EU5 stores units elsewhere (e.g. unit_manager.database)."
+        )
 
     return results
 

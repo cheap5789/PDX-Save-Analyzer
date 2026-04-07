@@ -7,30 +7,35 @@ The files here are copyright Paradox Interactive.
 
 ---
 
-## EU5 — What to copy and from where
+## EU5 — Setup
 
-Default EU5 install path (Steam):
+Copy the entire `game/` folder from your EU5 Steam installation into `game-data/` and rename it to `eu5`:
+
 ```
-C:\Program Files (x86)\Steam\steamapps\common\Europa Universalis V\game\
+Source:      C:\Program Files (x86)\Steam\steamapps\common\Europa Universalis V\game\
+Destination: game-data/eu5\
 ```
 
-Copy the following into `game-data/eu5/`, preserving the subfolder structure:
+### Resulting structure (top level)
 
-### Game config files (from `game/`)
+```
+game-data/eu5/
+  in_game/          ← game logic, configs, unit definitions
+  main_menu/        ← localization lives here (see note below)
+  dlc/              ← DLC data
+  loading_screen/
+  mod/
+```
 
-| Source path (relative to `game/`) | Purpose |
-|-----------------------------------|---------|
-| `common/` | Country definitions, cultures, religions, ages, technologies, defines |
-| `events/` | Event definitions (for event type labelling) |
-| `setup/` | Day-0 country state (starting conditions) |
+### What the parser actually uses
 
-### Localisation (from `game/main_menu/`)
+| Path | Contents | Used for |
+|------|----------|----------|
+| `eu5/in_game/common/unit_types/` | 29 `.txt` files | Military extraction — maps unit type keys to categories (infantry, cavalry, …) and max strength |
+| `eu5/in_game/common/cultures/` | 52 `.txt` files | Culture display names and group membership |
+| `eu5/main_menu/localization/english/` | 111 `.yml` files | All in-game display text (countries, cultures, religions, estates, war names, …) |
 
-| Source path (relative to `game/`) | Purpose |
-|-----------------------------------|---------|
-| `main_menu/localization/english/` | Display name strings for all game objects |
-
-> **Note:** The localisation path is `main_menu/localization/` — not `localisation/` or `localization/` at the `game/` root. For the dev copy, place them at `game-data/eu5/localization/english/` for Toolbox convenience.
+> **Localization quirk:** there is no `in_game/localization/` folder. All in-game display strings ship under `main_menu/localization/` — this is an EU5 packaging choice, not an error.
 
 ---
 
@@ -38,8 +43,8 @@ Copy the following into `game-data/eu5/`, preserving the subfolder structure:
 
 | Context | Where game files come from |
 |---------|---------------------------|
-| **Production app** | User's game install path (configured at startup). See `docs/CONFIGURATION.md`. |
-| **Toolbox scripts** | This `game-data/` directory. Pass via `--loc game-data/eu5/localization/english`. |
+| **Production app** | User's game install path (configured at startup via the Config tab). |
+| **Toolbox scripts** | This `game-data/` directory. |
 
 ---
 

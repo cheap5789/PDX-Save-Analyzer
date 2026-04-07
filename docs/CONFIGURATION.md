@@ -1,7 +1,7 @@
 # Configuration — Startup UI & Watcher Settings
 
 > Design document for the session configuration layer.
-> Agreed: 2026-04-03. Updated: 2026-04-04.
+> Agreed: 2026-04-03. Updated: 2026-04-07.
 
 ---
 
@@ -129,6 +129,8 @@ Each game DB has a `playthroughs` table. All snapshots and events are tagged wit
 - Comparing stats across campaigns (future feature)
 
 ### Proposed Schema (eu5.db)
+
+> **Scope note (added 2026-04-07):** The block below is the **minimal core schema** agreed on 2026-04-03 — the three foundational tables that anchor every campaign. The live schema in `backend/storage/database.py` has since grown to include the entity-table groups added in Phases 7–9: `cultures`, `religions`, `religion_snapshots`, `countries` (succession reference), `wars`, `war_snapshots`, `war_participants`, `locations`, `location_snapshots`, `provinces`, `province_snapshots`, and `pop_snapshots`. For the full current schema and field semantics, see `docs/games/eu5/save-schema.md` and `backend/storage/database.py`.
 
 ```sql
 -- One row per campaign

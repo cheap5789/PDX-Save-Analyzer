@@ -327,12 +327,24 @@ CREATE INDEX IF NOT EXISTS idx_sieges_war
 CREATE TABLE IF NOT EXISTS locations (
     id              INTEGER NOT NULL,           -- location ID from locations.locations key
     playthrough_id  TEXT NOT NULL REFERENCES playthroughs(id),
+    slug            TEXT,                       -- canonical slug from metadata.compatibility.locations
     province_id     INTEGER,                    -- references provinces.id (nullable for sea/TI)
     raw_material    TEXT,                       -- e.g. "clay", "wheat", "lumber"
     is_port         BOOLEAN DEFAULT 0,          -- has a port
     holy_sites      TEXT,                       -- JSON list of religion IDs
+    -- Geographic hierarchy (immutable per location, resolved from
+    -- map_data/definitions.txt at backfill / first-snapshot time).
+    province_def    TEXT,                       -- e.g. "uppland_province"
+    area            TEXT,                       -- e.g. "svealand_area"
+    region          TEXT,                       -- e.g. "scandinavian_region"
+    sub_continent   TEXT,                       -- e.g. "western_europe"
+    continent       TEXT,                       -- e.g. "europe"
     PRIMARY KEY(playthrough_id, id)
 );
+CREATE INDEX IF NOT EXISTS idx_locations_continent
+    ON locations(playthrough_id, continent);
+CREATE INDEX IF NOT EXISTS idx_locations_region
+    ON locations(playthrough_id, region);
 
 CREATE TABLE IF NOT EXISTS location_snapshots (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1523,15 +1535,25 @@ class Database:
         """Create or update a location static record."""
         await self.conn.execute(
             """INSERT INTO locations
-               (id, playthrough_id, province_id, raw_material, is_port, holy_sites)
-               VALUES (?, ?, ?, ?, ?, ?)
+               (id, playthrough_id, slug, province_id, raw_material, is_port, holy_sites,
+                province_def, area, region, sub_continent, continent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(playthrough_id, id) DO UPDATE SET
-                   raw_material = excluded.raw_material,
-                   is_port = excluded.is_port""",
+                   slug          = excluded.slug,
+                   raw_material  = excluded.raw_material,
+                   is_port       = excluded.is_port,
+                   province_def  = excluded.province_def,
+                   area          = excluded.area,
+                   region        = excluded.region,
+                   sub_continent = excluded.sub_continent,
+                   continent     = excluded.continent""",
             (loc["id"], playthrough_id,
+             loc.get("slug"),
              loc.get("province_id"), loc.get("raw_material"),
              loc.get("is_port", False),
-             json.dumps(loc.get("holy_sites")) if loc.get("holy_sites") else None),
+             json.dumps(loc.get("holy_sites")) if loc.get("holy_sites") else None,
+             loc.get("province_def"), loc.get("area"), loc.get("region"),
+             loc.get("sub_continent"), loc.get("continent")),
         )
 
     async def bulk_upsert_locations(
@@ -1542,18 +1564,28 @@ class Database:
             return 0
         data = [
             (loc["id"], playthrough_id,
+             loc.get("slug"),
              loc.get("province_id"), loc.get("raw_material"),
              loc.get("is_port", False),
-             json.dumps(loc.get("holy_sites")) if loc.get("holy_sites") else None)
+             json.dumps(loc.get("holy_sites")) if loc.get("holy_sites") else None,
+             loc.get("province_def"), loc.get("area"), loc.get("region"),
+             loc.get("sub_continent"), loc.get("continent"))
             for loc in locs
         ]
         await self.conn.executemany(
             """INSERT INTO locations
-               (id, playthrough_id, province_id, raw_material, is_port, holy_sites)
-               VALUES (?, ?, ?, ?, ?, ?)
+               (id, playthrough_id, slug, province_id, raw_material, is_port, holy_sites,
+                province_def, area, region, sub_continent, continent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(playthrough_id, id) DO UPDATE SET
-                   raw_material = excluded.raw_material,
-                   is_port = excluded.is_port""",
+                   slug          = excluded.slug,
+                   raw_material  = excluded.raw_material,
+                   is_port       = excluded.is_port,
+                   province_def  = excluded.province_def,
+                   area          = excluded.area,
+                   region        = excluded.region,
+                   sub_continent = excluded.sub_continent,
+                   continent     = excluded.continent""",
             data,
         )
         return len(data)
@@ -1612,6 +1644,36 @@ class Database:
             (playthrough_id,),
         )
         return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_geography_slugs(self, playthrough_id: str) -> dict[str, set[str]]:
+        """Return the set of distinct geographic slugs referenced by
+        any location in this playthrough.
+
+        Used by /api/playthroughs/{id}/geography to know which display
+        names to ship to the frontend (so the JSON stays small — only
+        slugs we actually use)."""
+        cursor = await self.conn.execute(
+            """SELECT DISTINCT slug, province_def, area, region, sub_continent, continent
+                 FROM locations WHERE playthrough_id = ?""",
+            (playthrough_id,),
+        )
+        out: dict[str, set[str]] = {
+            "location": set(),
+            "province_definition": set(),
+            "area": set(),
+            "region": set(),
+            "sub_continent": set(),
+            "continent": set(),
+        }
+        for row in await cursor.fetchall():
+            d = dict(row)
+            if d.get("slug"):          out["location"].add(d["slug"])
+            if d.get("province_def"):  out["province_definition"].add(d["province_def"])
+            if d.get("area"):          out["area"].add(d["area"])
+            if d.get("region"):        out["region"].add(d["region"])
+            if d.get("sub_continent"): out["sub_continent"].add(d["sub_continent"])
+            if d.get("continent"):     out["continent"].add(d["continent"])
+        return out
 
     async def get_location_snapshots(
         self,

@@ -29,7 +29,7 @@ External localisation files are only needed for **display names** (e.g. `"bavari
 
 ### Culture & Religion Reference Tables (implemented 2026-04-07)
 
-All culture and religion references in `pop_snapshots`, `location_snapshots`, and `location_snapshots` are stored as **INTEGER IDs** (raw from save). Dedicated reference tables provide ID → display name resolution:
+All culture and religion references in `pop_snapshots` and `location_snapshots` are stored as **INTEGER IDs** (raw from save). Dedicated reference tables provide ID → display name resolution:
 
 - **`cultures` table**: populated from `culture_manager.database` each backfill pass. Columns: `id` (int), `definition` (string key), `name` (localised display name), `culture_group`.
 - **`religions` table**: populated from `religion_manager.database`. Columns: `id`, `definition`, `religion_group`, `has_religious_head`, colour, and per-snapshot dynamic fields in `religion_snapshots`.
@@ -68,6 +68,27 @@ When a country is formed (e.g. Spain formed from Castile + Aragon), the successo
 - `canonical_tag` (computed): terminal successor in the chain. Set to self on first write; `finalize_country_canonical_tags()` walks predecessor chains after full backfill to propagate the correct value.
 
 **Why this matters:** The Demographics tab uses `canonical_tag` to group a country and all its predecessors when filtering by country — so selecting "Spain" automatically includes Castile and Aragon's historical territory.
+
+### Geographic Hierarchy & Location Slugs (implemented 2026-04-07)
+
+EU5 organises space as a six-level tree:
+
+```
+continent → sub_continent → region → area → province_definition → location
+```
+
+- **Location → slug** is fully self-referential in the save: `metadata.compatibility.locations` is an array indexed by `location_id - 1` whose entries are the slug strings (e.g. id `1` → `"stockholm"`). No game files required.
+- **Location → province_id** comes from the save (`locations.locations[id].province`).
+- **Province → province_definition** comes from the save (`provinces.database[id].definition`, e.g. `"uppland_province"`).
+- **The five upper levels** (`province_definition` → `area` → `region` → `sub_continent` → `continent`) are **not** in the save. They live in `<EU5 install>/game/map_data/definitions.txt`, a flat tab-indented `name = { ... }` tree where each leaf province block lists its location slugs as bare tokens.
+
+`backend/parser/eu5/geography_index.py` parses `definitions.txt` once per pipeline/backfill session via `GeographyIndex.load(game_install_path)` and exposes `chain_for_location(slug)` / `chain_for_province(slug)`. Per project rule #5, the file is read at runtime from the user's install path and never shipped. Smoke test against the verified install: 9 continents, 23 sub_continents, 82 regions, 803 areas, 4309 province_definitions, 28573 locations.
+
+The chain is denormalised onto each row in the `locations` table (`slug`, `province_def`, `area`, `region`, `sub_continent`, `continent`) with indexes on `continent` and `region`, so per-continent / per-region rollups are cheap.
+
+Display names live in the geography YAML files (`location_names_l_<lang>.yml`, `province_names_l_<lang>.yml`, `area_names_l_<lang>.yml`, `region_names_l_<lang>.yml`, `continent_l_<lang>.yml`). `backend/parser/localisation.py::load_geo_localisation()` loads them into a `{level → {slug → display_name}}` map; `GET /api/geography/{playthrough_id}` intersects that with the slugs actually used by the playthrough so the payload only contains what the UI needs. The frontend exposes `fmtLocation`, `fmtProvince`, `fmtArea`, `fmtRegion`, `fmtSubContinent`, `fmtContinent` on `GameLocalizationContext`, each falling back to a cleaned slug if no display name is loaded.
+
+> **Known gap (deferred, lowest priority):** EU5 ships ~62 `location_names_<culture>_l_english.yml` files providing per-culture renamings. The base file resolves only ~8116 of the 28573 location slugs; the per-culture files cover most of the rest. Until those are loaded, many locations will display as a cleaned-up slug rather than their proper culture-specific name.
 
 ### Location Ownership (verified 2026-04-07)
 

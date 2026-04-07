@@ -2,13 +2,13 @@
 
 A live watcher and analyzer for Paradox grand strategy games.
 
-Watches your save game directory, parses saves via [Rakaly](https://github.com/rakaly/cli), and streams live data to a configurable web dashboard — tracking country stats, time-series history, and key events (ruler deaths, wars, crises) suitable for After Action Reports.
+Watches your save game directory, parses saves, and streams live data to a configurable web dashboard — tracking country stats, time-series history, and key events suitable for After Action Reports.
 
 ## Status
 
 🚧 Active development — EU5 (Europa Universalis V) is the first supported game.
 
-## Features (planned)
+## Features
 
 - **Live file watcher** — detects new saves instantly via file system events
 - **Multi-campaign support** — tracks SP and MP campaigns simultaneously, auto-detects campaign switches
@@ -16,12 +16,14 @@ Watches your save game directory, parses saves via [Rakaly](https://github.com/r
 - **Country stats dashboard** — gold, manpower, stability, prestige, income, population and more
 - **Time-series charts** — track any metric across saves with trend lines
 - **Event log** — ruler deaths, wars, crises, epidemics — auto-detected, annotatable for AAR writing
-- **Multi-country comparison** — watch rivals, allies, and your own nation side by side
+- **Wars & military** — participant tracking, battle history, siege states, regiment strength over time
+- **Religions** — per-religion reform desire, tithe, saint power, member countries over time
+- **Territory** — location and province snapshots
+- **Demographics** — population by type, culture, religion, estate across time
 
 ## Tech Stack
 
 - **Backend:** Python + FastAPI + watchdog
-- **Parser:** Rakaly CLI (binary → JSON)
 - **Storage:** SQLite (one database per game)
 - **Frontend:** React + Vite + Recharts
 - **Real-time:** WebSockets
@@ -37,11 +39,35 @@ See [`docs/`](docs/) for full architecture, design decisions, and game format do
 
 ## Setup
 
-*Coming soon — setup instructions will be added once the core pipeline is functional.*
+### 1. Python environment
 
-## Rakaly
+```bash
+python -m venv venv
+venv\Scripts\activate        # Windows
+pip install -r requirements.txt
+```
 
-This project uses the [Rakaly CLI](https://github.com/rakaly/cli) to parse Paradox binary save files.
-Place the appropriate binary for your platform in `bin/rakaly/`:
-- `rakaly` (Linux x86_64)
-- `rakaly.exe` (Windows x86_64)
+### 2. Frontend
+
+```bash
+cd frontend
+npm install
+npm run build        # production build served by FastAPI
+# or: npm run dev    # Vite dev server for hot-reload during development
+```
+
+### 3. Game data
+
+See [`game-data/README.md`](game-data/README.md) for what to copy and where.
+
+### 4. Running
+
+One-click launch (recommended): double-click `start.bat` or run `start.ps1` from PowerShell. This activates the venv, installs missing deps, starts FastAPI + Vite, and opens the browser. `Ctrl+C` tears everything down.
+
+Manual launch:
+
+```bash
+python run_server.py
+```
+
+The FastAPI app is `backend.api.app:create_app`. The server boots idle — open `http://localhost:8000` and start the pipeline from the **Config** tab.
