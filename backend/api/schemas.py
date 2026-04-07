@@ -190,7 +190,7 @@ class WarSnapshotResponse(BaseModel):
     net_war_score: float | None = None
     war_direction_quarter: float | None = None
     war_direction_year: float | None = None
-    war_goal_held: bool | None = None
+    war_goal_held: int | None = None
 
 
 class WarParticipantResponse(BaseModel):
@@ -203,14 +203,14 @@ class WarParticipantResponse(BaseModel):
     side: str
     join_reason: str | None = None
     join_type: str | None = None
-    called_by: str | None = None
+    called_by: int | None = None
     join_date: str | None = None
     status: str = "Active"
     score_combat: float = 0
     score_siege: float = 0
     score_joining: float = 0
     losses: dict | list | None = None
-    io_id: str | None = None
+    io_id: int | None = None
 
 
 class LocationResponse(BaseModel):
