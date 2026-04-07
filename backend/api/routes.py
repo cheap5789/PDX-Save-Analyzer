@@ -426,19 +426,23 @@ async def get_wars(
     active_only: bool = Query(False, description="Only return active wars"),
 ) -> list[WarResponse]:
     """List all wars for a playthrough."""
-    db = await _get_db()
-    rows = await db.get_wars(playthrough_id, active_only=active_only)
-    result = []
-    for r in rows:
-        d = dict(r)
-        for key in ("original_defenders", "goal_target"):
-            if isinstance(d.get(key), str):
-                try:
-                    d[key] = json.loads(d[key])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        result.append(WarResponse(**d))
-    return result
+    try:
+        db = await _get_db()
+        rows = await db.get_wars(playthrough_id, active_only=active_only)
+        result = []
+        for r in rows:
+            d = dict(r)
+            for key in ("original_defenders", "goal_target"):
+                if isinstance(d.get(key), str):
+                    try:
+                        d[key] = json.loads(d[key])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            result.append(WarResponse(**d))
+        return result
+    except Exception:
+        logger.exception("GET /api/wars/%s failed", playthrough_id)
+        raise
 
 
 # ---------------------------------------------------------------------------

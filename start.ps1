@@ -162,8 +162,8 @@ try {
         }
 
         # Print any new output from both jobs (stderr included via 2>&1)
-        Receive-Job $BackendJob  -ErrorAction SilentlyContinue 2>&1 | ForEach-Object { Write-Host "[backend]  $_" -ForegroundColor DarkGray }
-        Receive-Job $FrontendJob -ErrorAction SilentlyContinue 2>&1 | ForEach-Object { Write-Host "[frontend] $_" -ForegroundColor DarkGray }
+        Receive-Job $BackendJob  2>&1 | ForEach-Object { Write-Host "[backend]  $_" -ForegroundColor DarkGray }
+        Receive-Job $FrontendJob 2>&1 | ForEach-Object { Write-Host "[frontend] $_" -ForegroundColor DarkGray }
 
         Start-Sleep -Milliseconds 500
     }
