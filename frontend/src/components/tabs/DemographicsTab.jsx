@@ -481,7 +481,7 @@ function ProportionalXAxis() {
       type="number"
       scale="linear"
       domain={['dataMin', 'dataMax']}
-      tickFormatter={xTickFmt}
+      tickFormatter={fmtYearTick}
       tick={axisStyle}
       stroke="var(--color-border)"
     />
