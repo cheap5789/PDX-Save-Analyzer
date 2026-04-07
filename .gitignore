@@ -58,3 +58,6 @@ saves/
 # The README.md inside game-data/ IS committed (it's just instructions)
 game-data/**
 !game-data/README.md
+
+#Claude stuff obviously
+.claude/**
