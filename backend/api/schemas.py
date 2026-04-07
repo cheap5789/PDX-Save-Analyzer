@@ -175,7 +175,7 @@ class WarResponse(BaseModel):
     original_defenders: list | str | None = None
     goal_type: str | None = None
     casus_belli: str | None = None
-    goal_target: str | list | None = None
+    goal_target: dict | list | str | None = None
 
 
 class WarSnapshotResponse(BaseModel):
