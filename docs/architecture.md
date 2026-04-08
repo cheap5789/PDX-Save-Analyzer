@@ -368,7 +368,7 @@ sequenceDiagram
     FS-->>FW: FileModifiedEvent
     FW-->>PL: queue.put(save_path)
     PL->>PL: get_next() → save_path
-    Note over PL: skip if mtime &lt; pipeline.started_at
+    Note over PL: skip if mtime → pipeline.started_at
 
     PL->>SL: load_save(path, rakaly_bin, loc_dir)
     SL->>RAK: subprocess.run(rakaly json save.eu5)
