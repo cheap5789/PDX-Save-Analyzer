@@ -21,9 +21,17 @@ import re
 from pathlib import Path
 
 
-# Match lines like:  KEY: "Value"  or  KEY: 'Value'
-# Keys may contain letters, digits, underscores, hyphens, dots
-_LINE_RE = re.compile(r'^\s+([\w\-\.]+):\s*["\'](.+?)["\']', re.UNICODE)
+# Match lines like:  KEY: "Value"
+# Paradox .yml files always use double quotes as the string delimiter.
+# Earlier versions of this regex accepted single quotes as a fallback and
+# used a non-greedy capture, which silently truncated any value containing
+# an apostrophe (e.g. "Wet'suwet'en" -> "Wet"). The current form:
+#   - accepts only " as the delimiter
+#   - uses a greedy capture anchored to the final " on the line
+#   - tolerates optional trailing whitespace and a "# comment"
+#   - accepts empty strings ""
+# Keys may contain letters, digits, underscores, hyphens, dots.
+_LINE_RE = re.compile(r'^\s+([\w\-\.]+):\s*"(.*)"\s*(?:#.*)?$', re.UNICODE)
 
 
 def load_localisation(loc_dir: str | Path) -> dict[str, str]:

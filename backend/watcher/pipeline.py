@@ -133,14 +133,25 @@ class WatcherPipeline:
                 "EU5 install directory and that common/unit_types/ (or similar) exists."
             )
 
-        # Load geographic hierarchy index (parsed once from game install path)
+        # Load geographic hierarchy index (parsed once from game install path).
+        # A missing definitions.txt degrades the Territory tab, geographic
+        # filters, and any region-based event silently, so log at ERROR.
         try:
             self._geo_index = GeographyIndex.load(self.config.game_install_path)
         except FileNotFoundError as exc:
-            logger.warning(
-                "Geography index not loaded (%s). Locations will be saved without "
-                "area/region/sub_continent/continent fields this session.",
-                exc,
+            logger.error(
+                "GeographyIndex.load() failed - definitions.txt not found "
+                "under %s. Locations will be saved WITHOUT area/region/"
+                "sub_continent/continent fields this session. Root cause: %s",
+                self.config.game_install_path, exc,
+            )
+            self._geo_index = None
+        except Exception:  # noqa: BLE001  — want full stack on parser errors
+            logger.error(
+                "GeographyIndex.load() failed while parsing definitions.txt "
+                "under %s. Locations will be saved WITHOUT geographic hierarchy "
+                "fields this session.",
+                self.config.game_install_path, exc_info=True,
             )
             self._geo_index = None
 
@@ -460,8 +471,19 @@ class WatcherPipeline:
             country_rows = extract_country_rows(save)
             await self._db.bulk_upsert_countries(pt_id, country_rows)
             culture_rows = extract_culture_statics(save)
-            await self._db.bulk_upsert_cultures(pt_id, culture_rows)
-            logger.info(f"  Countries: {len(country_rows)} upserted, cultures: {len(culture_rows)} upserted")
+            if not culture_rows:
+                logger.error(
+                    "extract_culture_statics returned 0 rows - "
+                    "culture_manager.database is empty or in an unexpected "
+                    "shape. Location snapshots will reference unresolvable "
+                    "culture IDs until the next save."
+                )
+            else:
+                await self._db.bulk_upsert_cultures(pt_id, culture_rows)
+            logger.info(
+                f"  Countries: {len(country_rows)} upserted, "
+                f"cultures: {len(culture_rows)} upserted"
+            )
         except Exception:
             logger.exception("Error in country/culture extraction")
 

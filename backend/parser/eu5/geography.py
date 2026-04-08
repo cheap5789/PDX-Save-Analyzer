@@ -29,6 +29,12 @@ def _build_location_slug_index(save: EU5Save) -> dict[int, str]:
     location_id (1-based, matching ``locations.locations`` keys) is
     ``index + 1``.  Verified against autosave.eu5 on 2026-04-07: 28 573
     slugs, id 1 → 'stockholm', id 2 → 'norrtalje'.
+
+    Asserts that ``len(metadata.compatibility.locations) ==
+    len(locations.locations)``.  A mismatch indicates either a corrupt save
+    or a game-version upgrade that added/removed location slots and must
+    fail loudly rather than producing off-by-one slug assignments — see
+    docs/games/eu5/save-schema.md (Slug resolution assertion).
     """
     slugs = (
         save.raw.get("metadata", {})
@@ -37,6 +43,15 @@ def _build_location_slug_index(save: EU5Save) -> dict[int, str]:
     )
     if not isinstance(slugs, list):
         return {}
+    locations_dict = save.raw.get("locations", {}).get("locations", {})
+    if isinstance(locations_dict, dict) and len(locations_dict) != len(slugs):
+        raise ValueError(
+            "Slug resolution assertion failed: "
+            f"metadata.compatibility.locations has {len(slugs)} entries but "
+            f"locations.locations has {len(locations_dict)} entries. "
+            "This indicates a corrupt save or a game-version mismatch. See "
+            "docs/games/eu5/save-schema.md for the rationale."
+        )
     return {i + 1: s for i, s in enumerate(slugs) if isinstance(s, str)}
 
 

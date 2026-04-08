@@ -446,15 +446,19 @@ CREATE INDEX IF NOT EXISTS idx_pop_snap_type
 
 -- ── Country reference table ──────────────────────────────────────────────
 
+-- NOTE: `tag` is NOT unique per playthrough. Multiple country objects can
+-- legitimately share a 3-letter TAG in a single save (formable + pre-existing
+-- slot, horde civil-war pretenders, etc.). See docs/games/eu5/duplicate-tags.md.
+-- country_id is the sole unique handle; all joins from location_snapshots go
+-- through owner_id → country_id, never through owner_tag → tag.
 CREATE TABLE IF NOT EXISTS countries (
     playthrough_id  TEXT    NOT NULL,
-    country_id      INTEGER NOT NULL,   -- numeric game ID
-    tag             TEXT    NOT NULL,   -- 3-letter TAG e.g. "BAV", "FRA"
+    country_id      INTEGER NOT NULL,   -- numeric game ID (unique per playthrough)
+    tag             TEXT    NOT NULL,   -- 3-letter TAG e.g. "BAV", "FRA" (NOT unique)
     name            TEXT,               -- localised display name (nullable)
     prev_tags       TEXT,               -- JSON array of predecessor TAGs (nullable)
     canonical_tag   TEXT NOT NULL,      -- terminal TAG in succession chain (self if no successor)
-    PRIMARY KEY (playthrough_id, country_id),
-    UNIQUE (playthrough_id, tag)
+    PRIMARY KEY (playthrough_id, country_id)
 );
 CREATE INDEX IF NOT EXISTS idx_countries_tag ON countries(playthrough_id, tag);
 CREATE INDEX IF NOT EXISTS idx_countries_canonical ON countries(playthrough_id, canonical_tag);
@@ -1682,19 +1686,64 @@ class Database:
         snapshot_id: int | None = None,
         owner_id: int | None = None,
     ) -> list[dict]:
-        """Get location snapshots with optional filters."""
-        query = "SELECT * FROM location_snapshots WHERE playthrough_id = ?"
+        """Get location snapshots with optional filters.
+
+        Enriched via LEFT JOIN on:
+          - locations (slug, geographic hierarchy: area/region/sub_continent/continent)
+          - countries via owner_id = country_id (owner display name)
+
+        The country join is deliberately keyed on country_id rather than
+        owner_tag. `tag` is not unique per playthrough — see
+        docs/games/eu5/duplicate-tags.md for the finding and decision trail.
+        """
+        # Explicit column list so aliases map cleanly into LocationSnapshotResponse.
+        # ls.* column order matches the CREATE TABLE definition.
+        query = """
+            SELECT
+                ls.id, ls.playthrough_id, ls.snapshot_id, ls.location_id,
+                ls.game_date,
+                ls.owner_id, ls.controller_id, ls.previous_owner_id,
+                ls.last_owner_change, ls.last_controller_change,
+                ls.cores, ls.garrison, ls.control,
+                ls.culture_id, ls.secondary_culture_id, ls.cultural_unity,
+                ls.religion_id, ls.religious_unity,
+                ls.language, ls.dialect, ls.pop_count,
+                ls.rank, ls.development, ls.prosperity,
+                ls.tax, ls.possible_tax, ls.market_id, ls.market_access,
+                ls.value_flow, ls.institutions,
+                ls.integration_type, ls.integration_owner_id,
+                ls.slave_raid_date, ls.owner_tag,
+                -- Location static data (stable across snapshots)
+                loc.slug           AS location_slug,
+                loc.province_def   AS province_def,
+                loc.area           AS area,
+                loc.region         AS region,
+                loc.sub_continent  AS sub_continent,
+                loc.continent      AS continent,
+                -- Owner display name, resolved via country_id (NOT tag;
+                -- see docs/games/eu5/duplicate-tags.md)
+                c.name             AS owner_name,
+                c.canonical_tag    AS owner_canonical_tag
+            FROM location_snapshots ls
+            LEFT JOIN locations loc
+                   ON loc.playthrough_id = ls.playthrough_id
+                  AND loc.id = ls.location_id
+            LEFT JOIN countries c
+                   ON c.playthrough_id = ls.playthrough_id
+                  AND c.country_id = ls.owner_id
+            WHERE ls.playthrough_id = ?
+        """
         params: list[Any] = [playthrough_id]
         if location_id is not None:
-            query += " AND location_id = ?"
+            query += " AND ls.location_id = ?"
             params.append(location_id)
         if snapshot_id is not None:
-            query += " AND snapshot_id = ?"
+            query += " AND ls.snapshot_id = ?"
             params.append(snapshot_id)
         if owner_id is not None:
-            query += " AND owner_id = ?"
+            query += " AND ls.owner_id = ?"
             params.append(owner_id)
-        query += " ORDER BY game_date ASC, location_id ASC"
+        query += " ORDER BY ls.game_date ASC, ls.location_id ASC"
         cursor = await self.conn.execute(query, params)
         return [dict(r) for r in await cursor.fetchall()]
 

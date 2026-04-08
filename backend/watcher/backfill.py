@@ -121,14 +121,25 @@ async def run_backfill(
                 "NOT be collected. Check that game_install_path points to the EU5 "
                 "install directory and that common/unit_types/ (or similar) exists."
             )
-        # Load geographic hierarchy index from same install path
+        # Load geographic hierarchy index from same install path.
+        # A missing definitions.txt is a real misconfiguration: the Territory
+        # tab, geographic filters, and any region-based event will silently
+        # degrade.  Log at ERROR so it actually surfaces.
         try:
             geo_index = GeographyIndex.load(game_install_path)
         except FileNotFoundError as exc:
-            logger.warning(
-                "Backfill: geography index not loaded (%s). Locations will be "
-                "saved without area/region/sub_continent/continent fields.",
-                exc,
+            logger.error(
+                "Backfill: GeographyIndex.load() failed - definitions.txt not "
+                "found under %s. Locations will be saved WITHOUT area/region/"
+                "sub_continent/continent fields. Root cause: %s",
+                game_install_path, exc,
+            )
+        except Exception as exc:  # noqa: BLE001  — want full stack on parser errors
+            logger.error(
+                "Backfill: GeographyIndex.load() failed while parsing "
+                "definitions.txt under %s. Locations will be saved WITHOUT "
+                "geographic hierarchy fields.",
+                game_install_path, exc_info=True,
             )
     else:
         logger.warning(
@@ -229,11 +240,25 @@ async def run_backfill(
             logger.warning(f"Backfill: religion extraction failed for {save_path.name}", exc_info=True)
 
         # --- Cultures ---
+        # Empty culture_rows is a symptom, not a benign outcome: a healthy
+        # EU5 save has ~2k culture_manager entries. Surface it loudly.
         try:
             culture_rows = extract_culture_statics(save)
-            await db.bulk_upsert_cultures(pt_id, culture_rows)
+            if not culture_rows:
+                logger.error(
+                    "Backfill: extract_culture_statics returned 0 rows for %s "
+                    "- culture_manager.database is empty or in an unexpected "
+                    "shape. Location snapshots will reference unresolvable "
+                    "culture IDs.",
+                    save_path.name,
+                )
+            else:
+                await db.bulk_upsert_cultures(pt_id, culture_rows)
         except Exception:
-            logger.warning(f"Backfill: culture extraction failed for {save_path.name}", exc_info=True)
+            logger.error(
+                f"Backfill: culture extraction failed for {save_path.name}",
+                exc_info=True,
+            )
 
         # --- Wars ---
         try:

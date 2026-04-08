@@ -526,7 +526,7 @@ Every endpoint exposed by `backend/api/routes.py`, the DB tables it reads/writes
 | `GET` | `/api/sieges/{id}` | `sieges` | `WarsTab.jsx` |
 | `GET` | `/api/military/{id}` | `country_military_snapshots` | `WarsTab.jsx` |
 | `GET` | `/api/locations/{id}` | `locations` | `TerritoryTab.jsx` |
-| `GET` | `/api/locations/{id}/snapshots` | `location_snapshots` | `TerritoryTab.jsx` |
+| `GET` | `/api/locations/{id}/snapshots` | `location_snapshots` **LEFT JOIN** `locations`, `countries` | `TerritoryTab.jsx` |
 | `GET` | `/api/provinces/{id}` | `provinces` | *(not yet wired in UI)* |
 | `GET` | `/api/provinces/{id}/snapshots` | `province_snapshots` | *(not yet wired in UI)* |
 | `GET` | `/api/pops/{id}/snapshots` | `pop_snapshots` | `DemographicsTab.jsx` |
@@ -586,6 +586,7 @@ erDiagram
     locations ||--o{ location_snapshots : "FK location_id"
     provinces ||--o{ province_snapshots : "FK province_id"
     locations ||--o{ pop_snapshots      : "FK location_id"
+    countries ||--o{ location_snapshots : "owner_id → country_id"
 
     playthroughs {
         TEXT id PK
@@ -623,9 +624,10 @@ erDiagram
         JSON holy_sites
     }
     countries {
-        INTEGER id
         TEXT playthrough_id FK
-        TEXT tag
+        INTEGER country_id PK
+        TEXT tag "NOT unique"
+        TEXT name
         TEXT canonical_tag
         JSON prev_tags
     }
@@ -646,6 +648,8 @@ erDiagram
 ```
 
 (Snapshot tables and per-pop / military tables are omitted from the ER fields list to keep the diagram readable — see `database.py` for the full column list. The full per-table field catalog lives in `docs/games/eu5/save-schema.md`.)
+
+> **Note — `countries.tag` is not unique per playthrough.** Multiple country objects can share a TAG in the same save (formables co-existing with their pre-existing slot, horde civil-war pretenders, etc.). The sole unique handle is `country_id`, and all foreign-key-style joins (e.g. `location_snapshots.owner_id → countries.country_id`) go through it — never through `tag`. See [`docs/games/eu5/duplicate-tags.md`](./games/eu5/duplicate-tags.md) for the empirical finding and decision trail.
 
 ---
 

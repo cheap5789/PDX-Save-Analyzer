@@ -17,6 +17,14 @@ const INTEGRATION_COLORS = {
   none: '#6b7280',
 }
 
+// Geography column selector options — user-chosen hierarchy level shown in
+// the table. Defaults to "region" (see docs/territory-tab.md discussion).
+const GEO_LEVELS = [
+  { key: 'area',      label: 'Area' },
+  { key: 'region',    label: 'Region' },
+  { key: 'continent', label: 'Continent' },
+]
+
 export default function TerritoryTab({ status }) {
   const api = useApi()
   const { track, fmt } = usePerfTracker('territory')
@@ -27,9 +35,14 @@ export default function TerritoryTab({ status }) {
   const [filterRank, setFilterRank] = useState('all')
   const [filterIntegration, setFilterIntegration] = useState('all')
   const [searchText, setSearchText] = useState('')
+  const [geoLevel, setGeoLevel] = useState('region')  // area | region | continent
   const ptId = status?.playthrough_id
 
-  // Load location data for the latest snapshot of the player's country
+  // Load location data for the latest snapshot (all owned locations).
+  // The backend already enriches each row with location_slug, area/region/
+  // sub_continent/continent, and owner_name — via LEFT JOIN on locations
+  // and countries (keyed by owner_id, not owner_tag; see
+  // docs/games/eu5/duplicate-tags.md).
   useEffect(() => {
     if (!ptId) return
     let cancelled = false
@@ -42,6 +55,28 @@ export default function TerritoryTab({ status }) {
     }).catch(() => {})
     return () => { cancelled = true }
   }, [ptId])
+
+  // Helpers — resolve display strings for a snapshot row using the localisation
+  // context. The backend already hands us the slug on each row, so these are
+  // pure formatters.
+  const fmtLocationCell = (loc) => {
+    if (!gameLoc) return `${loc.location_id}`
+    const name = gameLoc.fmtLocation(loc.location_slug) || `#${loc.location_id}`
+    return `${name} (${loc.location_id})`
+  }
+
+  const fmtOwnerCell = (loc) => {
+    if (!loc.owner_tag) return '—'
+    return loc.owner_name ? `${loc.owner_name} (${loc.owner_tag})` : loc.owner_tag
+  }
+
+  const fmtGeoCell = (loc) => {
+    if (!gameLoc) return loc[geoLevel] || '—'
+    if (geoLevel === 'area')      return gameLoc.fmtArea(loc.area)
+    if (geoLevel === 'region')    return gameLoc.fmtRegion(loc.region)
+    if (geoLevel === 'continent') return gameLoc.fmtContinent(loc.continent)
+    return loc[geoLevel] || '—'
+  }
 
   // Aggregated stats
   const stats = useMemo(() => {
@@ -61,7 +96,8 @@ export default function TerritoryTab({ status }) {
     return { ranks, integrations, totalDev, totalPops, totalLocs: locationData.length }
   }, [locationData])
 
-  // Filter + sort
+  // Filter + sort. Search matches across location name, owner name/tag,
+  // and the currently-selected geography level (per user spec 2026-04-09).
   const displayData = useMemo(() => fmt('filter_sort', () => {
     let data = [...locationData]
 
@@ -73,11 +109,19 @@ export default function TerritoryTab({ status }) {
     }
     if (searchText) {
       const q = searchText.toLowerCase()
-      data = data.filter((l) =>
-        String(l.location_id).includes(q) ||
-        (l.language || '').toLowerCase().includes(q) ||
-        (l.dialect || '').toLowerCase().includes(q)
-      )
+      data = data.filter((l) => {
+        const locName  = (gameLoc?.fmtLocation(l.location_slug) || '').toLowerCase()
+        const ownerStr = fmtOwnerCell(l).toLowerCase()
+        const geoStr   = (fmtGeoCell(l) || '').toLowerCase()
+        return (
+          locName.includes(q) ||
+          String(l.location_id).includes(q) ||
+          ownerStr.includes(q) ||
+          geoStr.includes(q) ||
+          (l.language || '').toLowerCase().includes(q) ||
+          (l.dialect || '').toLowerCase().includes(q)
+        )
+      })
     }
 
     data.sort((a, b) => {
@@ -87,7 +131,8 @@ export default function TerritoryTab({ status }) {
     })
 
     return data
-  }), [locationData, filterRank, filterIntegration, searchText, sortField, sortDir])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [locationData, filterRank, filterIntegration, searchText, sortField, sortDir, geoLevel, gameLoc])
 
   const handleSort = (field) => {
     if (sortField === field) {
@@ -169,7 +214,7 @@ export default function TerritoryTab({ status }) {
             type="text"
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
-            placeholder="ID, language, dialect..."
+            placeholder="Name, owner, region..."
             className="px-2 py-1 rounded text-xs w-48"
             style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text)', border: '1px solid var(--color-border)' }}
           />
@@ -192,8 +237,44 @@ export default function TerritoryTab({ status }) {
             <table className="w-full text-xs">
               <thead className="sticky top-0">
                 <tr style={{ background: 'var(--color-surface-alt)', color: 'var(--color-text-muted)' }}>
+                  {/* Location column (sortable by location_id) */}
+                  <th
+                    className="text-left px-2 py-2 cursor-pointer hover:text-white select-none whitespace-nowrap"
+                    onClick={() => handleSort('location_id')}
+                  >
+                    Location{sortIcon('location_id')}
+                  </th>
+                  {/* Owner column (sortable by owner_tag) */}
+                  <th
+                    className="text-left px-2 py-2 cursor-pointer hover:text-white select-none whitespace-nowrap"
+                    onClick={() => handleSort('owner_tag')}
+                  >
+                    Owner{sortIcon('owner_tag')}
+                  </th>
+                  {/* Geography column with level selector embedded in header */}
+                  <th className="text-left px-2 py-2 select-none whitespace-nowrap">
+                    <select
+                      value={geoLevel}
+                      onChange={(e) => { setGeoLevel(e.target.value); setSortField(e.target.value) }}
+                      className="px-1 py-0.5 rounded text-xs"
+                      style={{
+                        background: 'transparent',
+                        color: 'inherit',
+                        border: '1px solid var(--color-border)',
+                      }}
+                      title="Choose geography level"
+                    >
+                      {GEO_LEVELS.map((g) => (
+                        <option key={g.key} value={g.key}>{g.label}</option>
+                      ))}
+                    </select>
+                    <span
+                      className="ml-1 cursor-pointer"
+                      onClick={() => handleSort(geoLevel)}
+                    >{sortIcon(geoLevel)}</span>
+                  </th>
+                  {/* Remaining pre-existing columns */}
                   {[
-                    { key: 'location_id', label: 'ID' },
                     { key: 'rank', label: 'Rank' },
                     { key: 'development', label: 'Dev' },
                     { key: 'prosperity', label: 'Prosp' },
@@ -218,7 +299,9 @@ export default function TerritoryTab({ status }) {
               <tbody>
                 {displayData.slice(0, 500).map((loc) => (
                   <tr key={loc.location_id} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                    <td className="px-2 py-1">{loc.location_id}</td>
+                    <td className="px-2 py-1 whitespace-nowrap">{fmtLocationCell(loc)}</td>
+                    <td className="px-2 py-1 whitespace-nowrap">{fmtOwnerCell(loc)}</td>
+                    <td className="px-2 py-1 whitespace-nowrap">{fmtGeoCell(loc)}</td>
                     <td className="px-2 py-1 capitalize" style={{ color: RANK_COLORS[loc.rank] }}>
                       {(loc.rank || '').replace('rural_settlement', 'rural')}
                     </td>

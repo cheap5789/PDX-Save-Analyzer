@@ -224,13 +224,20 @@ class LocationResponse(BaseModel):
 
 
 class LocationSnapshotResponse(BaseModel):
-    """Location snapshot row — one per owned location per snapshot."""
+    """Location snapshot row — one per owned location per snapshot.
+
+    Enriched server-side via LEFT JOIN with `locations` (static geography)
+    and `countries` (owner display name). The country join keys on
+    `owner_id = country_id`, **not** on `owner_tag = tag`, because TAG is
+    not unique per playthrough — see docs/games/eu5/duplicate-tags.md.
+    """
     id: int
     playthrough_id: str
     snapshot_id: int
     location_id: int
     game_date: str
     owner_id: int | None = None
+    owner_tag: str | None = None
     controller_id: int | None = None
     previous_owner_id: int | None = None
     last_owner_change: str | None = None
@@ -258,6 +265,15 @@ class LocationSnapshotResponse(BaseModel):
     integration_type: str | None = None
     integration_owner_id: int | None = None
     slave_raid_date: str | None = None
+    # --- Enriched fields (from JOINed tables) ---------------------------
+    location_slug: str | None = None      # from locations.slug
+    province_def: str | None = None       # from locations.province_def
+    area: str | None = None               # from locations.area
+    region: str | None = None             # from locations.region
+    sub_continent: str | None = None      # from locations.sub_continent
+    continent: str | None = None          # from locations.continent
+    owner_name: str | None = None         # from countries.name (resolved via owner_id)
+    owner_canonical_tag: str | None = None  # from countries.canonical_tag
 
 
 class ProvinceResponse(BaseModel):

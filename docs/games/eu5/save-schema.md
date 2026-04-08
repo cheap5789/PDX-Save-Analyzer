@@ -1035,6 +1035,8 @@ The `countries` table is a reference table for all countries seen across a playt
 
 Stub rows are emitted for predecessor TAGs that appear in `prev_tags` but have no live entry in the save (the country has been absorbed). This ensures every `prev_tags` entry has a resolvable row in `countries`.
 
+> **⚠ TAG is not injective.** Multiple country objects can legitimately share a 3-letter TAG in a single save (formable + pre-existing slot, horde civil-war pretenders, etc.). The `countries` table therefore uses `country_id` as the sole unique handle — **no** `UNIQUE(playthrough_id, tag)` constraint. All joins from `location_snapshots` go through `owner_id → country_id`, never through tag. See [`duplicate-tags.md`](./duplicate-tags.md) for the full empirical finding and decision trail.
+
 **Succession chain example (Spain):**
 
 ```
@@ -1082,6 +1084,10 @@ These fields are set at world generation and change rarely if ever. Written when
 | Continent | (resolved) from `definitions.txt` | `"europe"` | Top of the hierarchy. 9 distinct values (5 land, 4 ocean). |
 
 > **Geographic hierarchy source.** The five upper levels (province → area → region → sub_continent → continent) are parsed once per session from `<game_install>/game/map_data/definitions.txt` by `backend/parser/eu5/geography_index.py`. The file is a flat tree with tab-indented `name = { ... }` blocks; the leaf province blocks contain bare location-slug tokens. The save itself supplies the location → province int link (and the province → province_definition slug), so `definitions.txt` is needed only for the area-and-above levels. Per project rule #5, this file is read from the user's game install path at runtime and never shipped.
+
+> **Slug resolution assertion.** `len(metadata.compatibility.locations) == len(locations.locations)` must hold in every save. `backend/parser/eu5/geography.py::_build_location_slug_index()` raises `ValueError` at parse time if the lengths differ — a mismatch indicates either a corrupt save or a game-version upgrade that added/removed location slots and must fail loudly rather than producing off-by-one slug assignments. Added and verified 2026-04-09 against `saves/autosave MP bavaria.eu5`.
+
+> **Enrichment via LEFT JOIN (API layer).** `GET /api/locations/{playthrough_id}/snapshots` returns enriched rows that include static geography (`location_slug`, `area`, `region`, `sub_continent`, `continent` from `locations`) and owner display data (`owner_name`, `owner_canonical_tag` from `countries`) via LEFT JOINs in `Database.get_location_snapshots()`. The country join is keyed on `country_id`, **not** `tag`, because TAG is not unique per playthrough (see [`duplicate-tags.md`](./duplicate-tags.md)). The enriched fields are optional (`| None`) in `LocationSnapshotResponse` so orphaned snapshots (e.g. if a location static row is absent) still serialise cleanly.
 
 ---
 
