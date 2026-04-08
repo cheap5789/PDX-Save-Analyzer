@@ -94,8 +94,11 @@ def extract_snapshot(
                 row[field.key] = val
         if row:
             # Embed localised country name so the frontend can display "Name (TAG)" format.
+            # Use the override-aware resolver so Pattern-B names (e.g. YUA 2337 →
+            # "Northern Yuán", CHI 761 → "Chén") stay consistent with the countries
+            # reference table populated by extract_country_rows.
             if save.loc:
-                name = save.country_display_name(tag)
+                name = save.resolve_country_display_name(cid, fallback_tag=tag)
                 if name and name != tag:
                     row["_name"] = name
             # Embed country color as a CSS hex string for consistent UI coloring.

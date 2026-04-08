@@ -36,9 +36,18 @@ _LINE_RE = re.compile(r'^\s+([\w\-\.]+):\s*"(.*)"\s*(?:#.*)?$', re.UNICODE)
 
 def load_localisation(loc_dir: str | Path) -> dict[str, str]:
     """
-    Load all .yml files in loc_dir and return a merged key→display-name dict.
-    Files are processed in alphabetical order; later files override earlier ones
-    for duplicate keys (shouldn't normally happen, but just in case).
+    Load all .yml files in loc_dir (non-recursive, top-level only) and return
+    a merged key→display-name dict. Files are processed in alphabetical order;
+    later files override earlier ones for duplicate keys (shouldn't normally
+    happen, but just in case).
+
+    Scripted entries (those containing ``$VAR$`` placeholders or
+    ``[scripted]`` game-concept references) are filtered out so callers can
+    safely look up ``loc.get(key)`` and get a display-ready string.
+    For entries that DO need scripted templates (country display name
+    overrides like ``NORTHERN_YUA: "Northern $YUA$"``), use
+    ``load_scripted_localisation`` instead — it walks the tree recursively
+    and preserves ``$VAR$`` placeholders.
     """
     loc_dir = Path(loc_dir)
     result: dict[str, str] = {}
@@ -48,13 +57,97 @@ def load_localisation(loc_dir: str | Path) -> dict[str, str]:
         raise FileNotFoundError(f"No .yml files found in {loc_dir}")
 
     for yml_path in yml_files:
-        _parse_yml(yml_path, result)
+        _parse_yml(yml_path, result, mode="regular")
 
     return result
 
 
-def _parse_yml(path: Path, out: dict[str, str]) -> None:
-    """Parse a single localisation .yml file into out dict."""
+def load_scripted_localisation(loc_dir: str | Path) -> dict[str, str]:
+    """Return a dict of localisation entries that contain ``$VAR$``
+    placeholders — the ones ``load_localisation`` deliberately filters out.
+
+    Walks ``loc_dir`` **recursively** (``rglob``) so that scripted entries
+    living inside event subdirectories (e.g. ``events/DHE/flavor_chi_l_english.yml``
+    where ``NORTHERN_YUA: "Northern $YUA$"`` is defined) land in the map.
+    Entries containing ``[`` game-concept references are still skipped —
+    those require concept resolution which we do not implement.
+
+    Returned values still contain their ``$KEY$`` tokens; callers use
+    ``resolve_scripted_value`` to substitute them against the regular loc
+    dict at lookup time.
+
+    Why a separate dict: existing callers of ``load_localisation`` rely on
+    the fact that values are display-ready strings with no unresolved
+    placeholders. Adding scripted entries to that dict would silently leak
+    raw ``$VAR$`` strings into the UI. Keeping them in a sibling dict
+    preserves that invariant while still making overrides available to
+    targeted resolvers (country display names, war names, etc.).
+
+    Overlap with the regular dict: ``$ADJ$``-only entries (e.g. war name
+    templates) are present in BOTH dicts by design — the regular dict
+    needs them because ``resolve_war_name`` looks them up there, and the
+    scripted dict needs them because they are legitimate scripted
+    templates that a country display name might also reference.
+    """
+    loc_dir = Path(loc_dir)
+    result: dict[str, str] = {}
+
+    if not loc_dir.exists():
+        return result
+
+    for yml_path in sorted(loc_dir.rglob("*.yml")):
+        _parse_yml(yml_path, result, mode="scripted_only")
+
+    return result
+
+
+# Matches $KEY$ tokens inside a scripted loc value.
+_SCRIPTED_TOKEN_RE = re.compile(r"\$([A-Za-z0-9_]+)\$")
+
+
+def resolve_scripted_value(
+    template: str,
+    loc: dict[str, str],
+    extra: dict[str, str] | None = None,
+) -> str:
+    """Substitute ``$KEY$`` tokens in ``template`` with values from ``loc``
+    (and optional ``extra``). Unknown tokens are left in place so the
+    caller can detect failed resolution.
+
+    Example:
+        ``resolve_scripted_value("Northern $YUA$", {"YUA": "Yuán"})``
+        → ``"Northern Yuán"``
+    """
+    if not template or "$" not in template:
+        return template
+
+    def _sub(match: "re.Match[str]") -> str:
+        key = match.group(1)
+        if extra is not None and key in extra:
+            return extra[key]
+        return loc.get(key, match.group(0))
+
+    return _SCRIPTED_TOKEN_RE.sub(_sub, template)
+
+
+def _parse_yml(path: Path, out: dict[str, str], *, mode: str = "regular") -> None:
+    """Parse a single localisation .yml file into ``out`` dict.
+
+    Args:
+        path: .yml file to parse.
+        out:  Target dict; keys are added/overwritten in place.
+        mode: One of:
+              - "regular"       Keep only display-ready entries. Skip ``[``
+                                concept refs; skip ``$VAR$`` entries except
+                                the narrow ``$ADJ$``-only war-template case.
+                                This is what ``load_localisation`` uses.
+              - "scripted_only" Keep ONLY the entries ``regular`` mode
+                                skips — i.e. entries containing ``$VAR$``
+                                placeholders (with any variable). ``[``
+                                refs are still skipped. This is what
+                                ``load_scripted_localisation`` uses so the
+                                two dicts are disjoint.
+    """
     try:
         # EU5 .yml files use UTF-8-BOM
         text = path.read_text(encoding="utf-8-sig")
@@ -65,15 +158,26 @@ def _parse_yml(path: Path, out: dict[str, str]) -> None:
         m = _LINE_RE.match(line)
         if m:
             key, value = m.group(1), m.group(2)
-            # Skip entries with dynamic scripted values (runtime $ variables or
-            # [ game-concept references).  But allow through entries whose only
-            # $ variable is $ADJ$ — those are static cross-references used in
-            # war name templates and are resolved by resolve_war_name().
+            # Always skip [game-concept] references — we don't resolve them.
             if "[" in value:
                 continue
-            remaining = value.replace("$ADJ$", "")
-            if "$" in remaining:
-                continue
+            has_any_var = "$" in value
+            has_non_adj_var = "$" in value.replace("$ADJ$", "")
+            if mode == "regular":
+                # Keep plain entries and the narrow $ADJ$-only case used by
+                # war name templates (resolve_war_name reads those directly
+                # out of the regular loc dict).
+                if has_non_adj_var:
+                    continue
+            elif mode == "scripted_only":
+                # Keep every entry that has any $-placeholder at all. This
+                # includes $ADJ$-only entries (which will also appear in the
+                # regular dict) so that a single scripted_loc lookup can
+                # resolve horde_civil_war_pretender_country and similar.
+                if not has_any_var:
+                    continue
+            else:
+                raise ValueError(f"unknown mode: {mode}")
             out[key] = value
 
 

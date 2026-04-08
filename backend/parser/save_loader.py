@@ -38,6 +38,15 @@ class EU5Save:
     religion_index: dict[int, str]     # int id -> religion key
     tag_index: dict[str, str]          # numeric_str -> TAG string
     loc: dict[str, str]                # localisation key -> display name
+    scripted_loc: dict[str, str] = None  # type: ignore[assignment]
+    # Scripted-template entries (values still contain $VAR$ placeholders).
+    # Populated alongside ``loc`` when a loc_dir is supplied. Defaults to
+    # an empty dict in __post_init__ so older callers that build an
+    # EU5Save by hand continue to work.
+
+    def __post_init__(self):
+        if self.scripted_loc is None:
+            self.scripted_loc = {}
 
     # Convenience properties
     @property
@@ -101,8 +110,97 @@ class EU5Save:
         return self.tag_index.get(str(country_id), f"#{country_id}")
 
     def country_display_name(self, tag: str) -> str:
-        """TAG -> human display name from localisation"""
+        """TAG -> human display name from localisation (simple tag lookup).
+
+        For countries that carry an override via the ``country_name`` field
+        (dict form, scripted key, or plain string override — see
+        ``docs/games/eu5/duplicate-tags.md`` Pattern-B discussion), use
+        ``resolve_country_display_name`` below which walks the override
+        chain before falling back to this method.
+        """
         return self.loc.get(tag, tag)
+
+    def resolve_country_display_name(
+        self,
+        country_id: int | str,
+        fallback_tag: str | None = None,
+    ) -> str:
+        """Resolve a country's display name, honouring ``country_name`` overrides.
+
+        Resolution order:
+        1. If ``cdata["country_name"]`` is a **dict**, extract the inner
+           ``name`` field and fall through to step 2. The dict wrapper also
+           carries ``key.Adjective`` and ``bases.Base`` which feed the
+           ``$ADJ$`` substitution below.
+        2. If the ``name`` candidate is a recognised key in ``self.loc``
+           (display-ready), use that value as the template.
+        3. Else if it is a key in ``self.scripted_loc`` (contains
+           ``$VAR$`` placeholders), use that value as the template and
+           substitute placeholders against ``self.loc``, passing the
+           parent-country adjective as ``$ADJ$`` when the dict form carries
+           a ``bases.Base`` hint.
+        4. Else fall back to ``self.loc.get(fallback_tag, fallback_tag)``.
+        5. If the resolved template still contains unresolved ``$…$``
+           tokens after substitution, fall back again to step 4 rather
+           than showing a broken string in the UI.
+
+        ``AAA*`` colonial placeholder countries whose ``country_name`` is a
+        raw province slug (~76 cases in the dev save) are NOT handled here
+        by design — they need a separate "Spanish colony of …" fallback
+        rule which is deferred (see ``docs/games/eu5/duplicate-tags.md``).
+        Such names fall through to the fallback_tag branch naturally.
+        """
+        from backend.parser.localisation import resolve_scripted_value
+
+        cdata = self.country_data(country_id)
+        cn = cdata.get("country_name") if isinstance(cdata, dict) else None
+        fb_tag = fallback_tag or self.tag_index.get(str(country_id)) or ""
+        tag_fallback = self.loc.get(fb_tag, fb_tag)
+
+        # Colonial placeholder guard — DEFERRED (see duplicate-tags.md
+        # "Open questions" #3). ``AAA*`` tags are pre-allocated colonial
+        # country slots whose ``country_name`` is a raw province slug like
+        # ``sumbawa_province``. Those slugs happen to be loc keys and would
+        # otherwise resolve here to plain place names ("Sumbawa", "Surrey"),
+        # bypassing the intended "Spanish colony of X"-style fallback rule
+        # that is still TBD. Keep them pinned to the tag fallback until the
+        # colonial rule lands.
+        if fb_tag.startswith("AAA"):
+            return tag_fallback
+
+        # Step 1: unwrap dict form.
+        name_candidate: str | None = None
+        adj_override: str | None = None
+        if isinstance(cn, dict):
+            raw_name = cn.get("name")
+            if isinstance(raw_name, str):
+                name_candidate = raw_name
+            bases = cn.get("bases")
+            if isinstance(bases, dict):
+                base_tag = bases.get("Base")
+                if isinstance(base_tag, str):
+                    adj_override = self.loc.get(f"{base_tag}_ADJ") or self.loc.get(base_tag)
+        elif isinstance(cn, str):
+            name_candidate = cn
+
+        if not name_candidate:
+            return tag_fallback
+
+        # Step 2: plain loc hit.
+        if name_candidate in self.loc:
+            return self.loc[name_candidate]
+
+        # Step 3: scripted template resolution.
+        template = self.scripted_loc.get(name_candidate)
+        if template:
+            extra = {"ADJ": adj_override} if adj_override else None
+            resolved = resolve_scripted_value(template, self.loc, extra=extra)
+            # If substitution left unresolved tokens, prefer the tag fallback.
+            if "$" not in resolved:
+                return resolved
+
+        # Step 4/5: fallback to tag-based display.
+        return tag_fallback
 
     def country_data(self, country_id: int | str) -> dict:
         """Get raw country object by numeric id"""
@@ -184,15 +282,24 @@ def load_save(
 
     # --- Step 5: Load localisation if provided ---
     loc: dict[str, str] = {}
+    scripted_loc: dict[str, str] = {}
     if loc_dir is not None:
-        from backend.parser.localisation import load_localisation
+        from backend.parser.localisation import (
+            load_localisation,
+            load_scripted_localisation,
+        )
         loc_dir = Path(loc_dir)
         if loc_dir.exists():
             if verbose:
                 print(f"[save_loader] Loading localisation from {loc_dir}...", file=sys.stderr)
             loc = load_localisation(loc_dir)
+            scripted_loc = load_scripted_localisation(loc_dir)
             if verbose:
-                print(f"[save_loader] Loaded {len(loc):,} localisation entries.", file=sys.stderr)
+                print(
+                    f"[save_loader] Loaded {len(loc):,} regular + "
+                    f"{len(scripted_loc):,} scripted localisation entries.",
+                    file=sys.stderr,
+                )
         else:
             print(f"[save_loader] Warning: loc_dir not found: {loc_dir}", file=sys.stderr)
 
@@ -202,4 +309,5 @@ def load_save(
         religion_index=religion_index,
         tag_index=tag_index,
         loc=loc,
+        scripted_loc=scripted_loc,
     )

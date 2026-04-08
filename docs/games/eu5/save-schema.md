@@ -204,8 +204,10 @@ Two sub-keys:
 
 ### Country Object — Key Fields
 
-> ⚠️ `country_name` is the 3-letter TAG (e.g. `"WUR"`), NOT the display name.
+> ⚠️ `country_name` is **usually** the 3-letter TAG (e.g. `"WUR"`), NOT the display name.
 > Display name requires localisation files. Only `metadata.player_country_name` gives the player's display name directly.
+>
+> ⚠️ `country_name` can also be a **plain string override** (e.g. CHI's value is `"CHE"` → loc → "Chén") or a **dict** of the form `{name, key: {Adjective}, bases: {Base}}` for scripted display names like the horde civil-war pretender template. When the `name` points at a scripted loc entry (e.g. `NORTHERN_YUA: "Northern $YUA$"`) the value must be resolved via `resolve_scripted_value` against the regular loc dict. All of this is handled centrally by `EU5Save.resolve_country_display_name(country_id)` — always prefer that method over a raw `loc.get(tag)`. See `docs/games/eu5/duplicate-tags.md` for the full resolution chain including the `AAA*` colonial placeholder guard.
 
 **`currency_data`** sub-object (main tracked resources):
 
