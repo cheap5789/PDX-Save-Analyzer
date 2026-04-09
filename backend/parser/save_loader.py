@@ -133,7 +133,13 @@ class EU5Save:
            carries ``key.Adjective`` and ``bases.Base`` which feed the
            ``$ADJ$`` substitution below.
         2. If the ``name`` candidate is a recognised key in ``self.loc``
-           (display-ready), use that value as the template.
+           (display-ready), use that value as the template. This step
+           also catches the placeholder-tag case (``AAA*``/``ABA*``),
+           where ``country_name`` is a raw location slug like
+           ``sumbawa_province``. Those slugs land in ``self.loc`` because
+           ``load_localisation`` explicitly pulls in
+           ``location_names/location_names_l_english.yml`` — see that
+           loader's docstring for why.
         3. Else if it is a key in ``self.scripted_loc`` (contains
            ``$VAR$`` placeholders), use that value as the template and
            substitute placeholders against ``self.loc``, passing the
@@ -144,11 +150,13 @@ class EU5Save:
            tokens after substitution, fall back again to step 4 rather
            than showing a broken string in the UI.
 
-        ``AAA*`` colonial placeholder countries whose ``country_name`` is a
-        raw province slug (~76 cases in the dev save) are NOT handled here
-        by design — they need a separate "Spanish colony of …" fallback
-        rule which is deferred (see ``docs/games/eu5/duplicate-tags.md``).
-        Such names fall through to the fallback_tag branch naturally.
+        Placeholder tags (``AAA*`` / ``ABA*`` suffixed, 105 countries in
+        the 2026-04-09 dev save — 95 AAA* + 10 ABA*) are auto-generated
+        minor independent nations, NOT colonial subjects as originally
+        assumed. Their display name derives from the location slug held
+        in ``country_name`` and falls out of step 2 naturally. See
+        ``docs/games/eu5/duplicate-tags.md`` for the investigation
+        record.
         """
         from backend.parser.localisation import resolve_scripted_value
 
@@ -156,17 +164,6 @@ class EU5Save:
         cn = cdata.get("country_name") if isinstance(cdata, dict) else None
         fb_tag = fallback_tag or self.tag_index.get(str(country_id)) or ""
         tag_fallback = self.loc.get(fb_tag, fb_tag)
-
-        # Colonial placeholder guard — DEFERRED (see duplicate-tags.md
-        # "Open questions" #3). ``AAA*`` tags are pre-allocated colonial
-        # country slots whose ``country_name`` is a raw province slug like
-        # ``sumbawa_province``. Those slugs happen to be loc keys and would
-        # otherwise resolve here to plain place names ("Sumbawa", "Surrey"),
-        # bypassing the intended "Spanish colony of X"-style fallback rule
-        # that is still TBD. Keep them pinned to the tag fallback until the
-        # colonial rule lands.
-        if fb_tag.startswith("AAA"):
-            return tag_fallback
 
         # Step 1: unwrap dict form.
         name_candidate: str | None = None

@@ -57,11 +57,58 @@ With the ghost-slot filter in place, the extractor no longer produces same-tag d
 - **`canonical_tag` finalisation** in the DB (`finalize_country_canonical_tags`) walks the `prev_tags → tag` graph. With the ghost filter, each tag resolves to exactly one row, so the walk is deterministic.
 - **Territory tab** joins by `owner_id → country_id`, which is safe under this model.
 
+## Placeholder-tag countries (`AAA*` / `ABA*`)
+
+**Status:** Investigated and resolved 2026-04-09. Supersedes the earlier "colonial placeholder" framing, which was empirically wrong.
+
+### What they actually are
+
+EU5 pre-allocates a range of three-letter-plus-digit tags — `AAA00`..`AAA99` and `ABA00`..`ABA99` — as generic slots for auto-generated minor independent nations. In the Bavaria autosave there are **95 live `AAA*` + 10 live `ABA*` = 105 placeholder countries**. They are:
+
+- `country_type == "Real"` with a capital, primary culture, ruler, full government, and independent diplomatic relations.
+- **Not** subjects of anyone. An exhaustive grep of the 320 MB rakaly JSON for `overlord`, `subject_type`, `colonial_parent`, `liege`, `master_id`, `is_subject`, `sovereign`, `suzerain`, and `subjects` found zero hits on any `AAA*`/`ABA*` record.
+- Four of them (highest: `AAA82` at 190.40/mo) carry non-zero `last_months_subject_tax`, meaning they *collect* subject tax — they are overlords, not subjects. That inversion alone rules out the "colonial subject" hypothesis.
+- Typologically they are tribes, petty kingdoms, and dynastic fragments scattered across the map to fill regions that vanilla doesn't hand-author.
+
+The earlier "Spanish colony of X" framing was based on a wrong premise and has been removed from this document, from `save_loader.py`, and from `save-schema.md`.
+
+### Naming convention
+
+Each placeholder country stores `country_name` as a **plain string** — a raw location slug from the game's `location_names_l_english.yml`. Examples: `sumbawa_province`, `surrey_province`, `kurmysh_province`, `mahadeo`, `zemetchino`. The slug is the country's de-facto name — the location it sits on or is named after.
+
+Resolution falls out naturally from step 2 of `EU5Save.resolve_country_display_name()`: the slug is looked up in `self.loc`, which now includes `location_names/location_names_l_english.yml` thanks to the explicit second source added to `load_localisation` on 2026-04-09 (see that function's docstring). All 105 placeholder countries resolve via this path; no prefix-specific code is required.
+
+### Known collisions
+
+Two pairs of placeholder countries resolve to the same display name in the Bavaria autosave:
+
+- `AAA64` and `AAA70` → both "Borisoglebsk"
+- `AAA78` and `AAA84` → both "Penza"
+
+Decision (2026-04-09): **accept the collisions**. The UI already decorates duplicate display names with the tag suffix (`"Borisoglebsk (AAA64)"` vs `"Borisoglebsk (AAA70)"`), which is sufficient disambiguation. Joins remain on `country_id`, so the collision is purely cosmetic.
+
+### Prefix allowlist
+
+The set of known placeholder-tag prefixes is a **documentation-only allowlist**: `{AAA, ABA}`, applied **only to suffixed tags** (`AAA00`..`AAA99`, `ABA00`..`ABA99`). The bare three-letter tags `AAA` and `ABA` are **not** placeholders — in particular `ABA` is a live country called **Alba** with `country_name == "ABA"` (self-referential plain-string override resolving to `loc["ABA"] = "Alba"`). The resolver does not implement a code-level prefix check; the allowlist is strictly for writeup and mental model. If a future save surfaces a new prefix family (`ACA*`, `BAA*`, ...), the resolver will still handle it correctly as long as the slug is in `loc`, but this document should be updated to record the discovery.
+
+### Loader note: `location_names_l_english.yml`
+
+The canonical location-name file lives at `main_menu/localization/english/location_names/location_names_l_english.yml` (29,791 lines). It is **not** reachable by the default top-level glob in `load_localisation`; we explicitly pull it in by name. The per-culture/per-language variants in the same directory (`location_names_polish_l_english.yml`, etc.) carry dotted keys like `anyksciai.west_slavic_language: "…"` and are deferred to a later phase (original agreement 2026-04-07). Do not "helpfully" make the loader recursive without revisiting that decision.
+
+### Regex relaxation side-effect
+
+To parse `location_names_l_english.yml` at all, `_LINE_RE` was relaxed from `^\s+` (at least one leading whitespace) to `^\s*` (zero or more). That file contains ~thousands of entries at column 0, violating Paradox's own indentation convention. Side-effect: the relaxed regex picks up col-0 entries in other loc files too, widening the loaded dicts:
+
+- `save.loc`: 86,689 → 120,629 entries (+33,940)
+- `save.scripted_loc`: 13,327 → 15,322 entries (+1,995)
+
+This was a deliberate widening (decision 2026-04-09, option A over special-casing the single file) on the principle that col-0 entries exist in real game files and refusing to parse them is the bug, not the fix. No regressions observed on spot-checked country display names (YUA, CHI, OTC, YMT, SWI, FRA, WUR, SWE, DAN) or on the ghost-filter winners.
+
 ## Open questions
 
 1. **Predecessor stitching by country_id.** The current `prev_tags` succession model is tag-based. To make it fully `country_id`-safe, `prev_tags` would need to become `prev_country_ids` (numeric) — but the save only exposes predecessors as TAG strings, not IDs. For predecessors that no longer exist in the save (absorbed countries), there is no `country_id` to point to. This remains a tag-based lookup by necessity, and is now unambiguous because of the ghost filter.
 2. **~~Dict-form display name resolution (Pattern-B work)~~.** *Resolved 2026-04-09.* Implemented as `EU5Save.resolve_country_display_name()` in `backend/parser/save_loader.py`. The resolution chain: (a) unwrap `country_name` dict-form to pull out the inner `name`, (b) try the regular loc dict, (c) fall back to the scripted loc dict and substitute `$VAR$` tokens via `resolve_scripted_value`, (d) fall back to the tag's loc display name. Scripted entries come from `load_scripted_localisation`, which walks the localisation tree recursively so that entries defined in `events/**/flavor_*_l_english.yml` (e.g. `NORTHERN_YUA: "Northern $YUA$"`) are discoverable. `horde_civil_war_pretender_country` with `$ADJ$` substitution is also handled via the `bases.Base` hint → `{TAG}_ADJ` lookup. Verified on the Bavaria autosave: YUA 2337 resolves to "Northern Yuán", CHI 761 to "Chén", OTC/YMT/SWI to their loc names.
-3. **`AAA*` colonial placeholder countries.** ~65 live colonial placeholder countries have `country_name` set to a raw province slug (e.g. `sumbawa_province`). Many of those slugs are themselves loc keys ("Sumbawa", "Surrey", "Erāq-e Ajam"), so the display name resolver **would** have silently rendered them as bare place names. That bypasses the intended "colony of X"-style display rule which is still TBD. Per the deferral agreed on 2026-04-09, the resolver hard-guards on `tag.startswith("AAA")` and returns the tag fallback until the colonial rule is implemented. Remove the guard as part of that future work.
+3. **~~`AAA*` colonial placeholder countries~~.** *Resolved 2026-04-09.* See "Placeholder-tag countries (`AAA*` / `ABA*`)" above. They are not colonial subjects; the previous "Spanish colony of X" framing was empirically wrong.
 
 ## References
 

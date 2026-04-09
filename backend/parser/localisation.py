@@ -30,16 +30,41 @@ from pathlib import Path
 #   - uses a greedy capture anchored to the final " on the line
 #   - tolerates optional trailing whitespace and a "# comment"
 #   - accepts empty strings ""
+#   - tolerates ZERO leading whitespace (``^\s*`` not ``^\s+``) because
+#     ``location_names_l_english.yml`` contains thousands of entries at
+#     column 0, violating Paradox's own indentation convention. The
+#     regex still can't match the ``l_english:`` language header because
+#     that line has no quoted value.
 # Keys may contain letters, digits, underscores, hyphens, dots.
-_LINE_RE = re.compile(r'^\s+([\w\-\.]+):\s*"(.*)"\s*(?:#.*)?$', re.UNICODE)
+_LINE_RE = re.compile(r'^\s*([\w\-\.]+):\s*"(.*)"\s*(?:#.*)?$', re.UNICODE)
 
 
 def load_localisation(loc_dir: str | Path) -> dict[str, str]:
     """
-    Load all .yml files in loc_dir (non-recursive, top-level only) and return
-    a merged key→display-name dict. Files are processed in alphabetical order;
-    later files override earlier ones for duplicate keys (shouldn't normally
-    happen, but just in case).
+    Load localisation entries into a merged key→display-name dict.
+
+    Scope:
+      1. All top-level ``*.yml`` files in ``loc_dir`` (non-recursive).
+      2. **Plus** the canonical location name file
+         ``location_names/location_names_l_english.yml`` (pulled in by
+         name, NOT by recursive walk — see below).
+
+    The per-culture / per-language variants in ``location_names/`` (e.g.
+    ``location_names_polish_l_english.yml``) are intentionally NOT
+    loaded. Those carry dotted keys like
+    ``anyksciai.west_slavic_language: "…"`` which are a separate
+    per-culture override system deferred on 2026-04-07. Leaving the
+    loader non-recursive prevents those keys from silently leaking into
+    ``save.loc``.
+
+    Why the explicit second source: without it, tens of thousands of
+    location slugs (``tallinn``, ``peshawar``, ``kazan_province`` …) are
+    missing from ``save.loc``. This matters for
+    ``EU5Save.resolve_country_display_name`` because placeholder-tagged
+    countries (``AAA*``, ``ABA*``) carry ``country_name`` as a raw
+    location slug that must round-trip through this dict. Discovered on
+    2026-04-09 while auditing 105 placeholder countries (95 AAA* + 10
+    ABA*) whose display names were falling back to the tag.
 
     Scripted entries (those containing ``$VAR$`` placeholders or
     ``[scripted]`` game-concept references) are filtered out so callers can
@@ -58,6 +83,12 @@ def load_localisation(loc_dir: str | Path) -> dict[str, str]:
 
     for yml_path in yml_files:
         _parse_yml(yml_path, result, mode="regular")
+
+    # Canonical location names — explicit file, not a recursive walk.
+    # See docstring above for the rationale.
+    location_names_file = loc_dir / "location_names" / "location_names_l_english.yml"
+    if location_names_file.exists():
+        _parse_yml(location_names_file, result, mode="regular")
 
     return result
 
